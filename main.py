@@ -1,95 +1,228 @@
 import os
-from dotenv import load_dotenv
 import requests
-import pandas as pd
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from flask import Flask, jsonify
 
-# .env dosyasını yükle (lokalde işine yarar, Render'da env panelinden alacağız)
-load_dotenv()
+# ------------------ ENV AYARLARI ------------------ #
 
-# API Key'i al
+load_dotenv()  # Lokalde .env okur, Render'da env panelini kullanacağız
+
 API_KEY = os.getenv("API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # ŞİMDİLİK YOK, İLERİDE
 
 if not API_KEY:
-    print("❌ API_KEY bulunamadı! Render panelinden ya da .env'den tanımlamalısın.")
+    print("❌ API_KEY bulunamadı! Render Environment Variables kısmına eklemelisin.")
 else:
-    print("✅ API_KEY yüklendi (gizli, sadece varlığını kontrol ediyoruz).")
+    print("✅ API_KEY bulundu.")
 
-headers = {
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    print("⚠️ Telegram bilgileri eksik (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID). "
+          "Yine de sistem çalışacak ama Telegram'a mesaj gönderemeyecek.")
+else:
+    print("✅ Telegram ayarları yüklendi.")
+
+# API-FOOTBALL ayarları
+API_BASE_URL = "https://v3.football.api-sports.io"
+HEADERS = {
     "x-rapidapi-key": API_KEY,
     "x-rapidapi-host": "v3.football.api-sports.io"
 }
 
-url = "https://v3.football.api-sports.io/fixtures?league=39&season=2023"
+# Hedef ligler (istersen çoğaltırız)
+TARGET_LEAGUES = [39]  # Premier League (örnek)
 
 
-def getir_maclar():
+# ------------------ TELEGRAM FONKSİYONU ------------------ #
+
+def send_telegram_message(text: str):
+    """Telegram'a basit bir mesaj yollar."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram bilgileri tanımlı değil, mesaj gönderilmeyecek.")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code != 200:
+            print("❌ Telegram hatası:", resp.status_code, resp.text)
+        else:
+            print("✅ Telegram mesajı gönderildi.")
+    except Exception as e:
+        print("⚠️ Telegram isteğinde hata:", e)
+
+
+# ------------------ MAÇ VERİSİ ÇEKME ------------------ #
+
+def get_today_fixtures():
     """
-    API'den maçları çekip DataFrame olarak döndürür.
-    Şimdilik sadece test amaçlı; ileride buraya model / filtre ekleriz.
+    Bugünün (veya istersen yarının) maçlarını API-FOOTBALL'dan çeker.
+    Şimdilik sadece TARGET_LEAGUES içindeki ligleri filtreliyoruz.
     """
-    print("➡ Maç verileri çekiliyor...")
-    response = requests.get(url, headers=headers)
-    data = response.json()
+    # Avrupa saatine göre bugün
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
 
-    # Güvenlik amaçlı log
-    if "response" not in data:
-        print("⚠ Beklenmeyen API cevabı:", data)
-        return None, data
+    print(f"📅 {today_str} tarihli maçlar çekiliyor...")
 
-    # Basit bir DataFrame örneği
-    fixtures = data["response"]
-    rows = []
+    url = f"{API_BASE_URL}/fixtures"
+    params = {
+        "date": today_str,
+        "timezone": "Europe/Istanbul"
+    }
+
+    try:
+        resp = requests.get(url, headers=HEADERS, params=params, timeout=15)
+        if resp.status_code != 200:
+            print("❌ API Hatası:", resp.status_code, resp.text)
+            return []
+
+        data = resp.json()
+        if "response" not in data:
+            print("⚠️ Beklenmeyen API cevabı:", data)
+            return []
+
+        fixtures = data["response"]
+
+        # Lig filtrele (isteğe bağlı)
+        filtered = [
+            f for f in fixtures
+            if f.get("league", {}).get("id") in TARGET_LEAGUES
+        ]
+
+        print(f"✅ Toplam {len(filtered)} maç bulundu (filtrelenmiş).")
+        return filtered
+
+    except Exception as e:
+        print("⚠️ Maçları çekerken hata:", e)
+        return []
+
+
+# ------------------ BASİT "AI" TAHMİN (YER TUTUCU) ------------------ #
+
+def simple_score_fixture(fixture: dict) -> float:
+    """
+    Şimdilik çok basit bir skor hesaplayacağız.
+    İleride burayı DeepSeek tahmini ile değiştireceğiz.
+    """
+    league_name = fixture.get("league", {}).get("name", "")
+    importance_bonus = 0.0
+    if "Premier League" in league_name:
+        importance_bonus = 0.2  # Örnek: önemli liglere ufak bonus
+
+    # Ev sahibi ismi uzun ve "büyük kulüp" gibi diye saçma bir kural koymayalım :)
+    # Şimdilik tamamen dummy skor:
+    base_score = 0.5
+
+    return base_score + importance_bonus
+
+
+def pick_best_5(fixtures: list) -> list:
+    """
+    Maç listesi içinden en yüksek "skor"lu 5 maçı seçer.
+    Şimdilik simple_score_fixture kullanıyor.
+    İleride buraya DeepSeek destekli gerçek model gelecek.
+    """
+    scored = []
     for f in fixtures:
-        try:
-            row = {
-                "tarih": f["fixture"]["date"],
-                "ev": f["teams"]["home"]["name"],
-                "deplasman": f["teams"]["away"]["name"],
-                "lig": f["league"]["name"],
-                "ülke": f["league"]["country"],
-                "durum": f["fixture"]["status"]["short"],
-            }
-            rows.append(row)
-        except Exception as e:
-            print("Satır parse edilirken hata:", e)
+        score = simple_score_fixture(f)
+        scored.append((score, f))
 
-    df = pd.DataFrame(rows)
-    print(f"✅ Toplam {len(df)} maç çekildi.")
-    return df, data
+    # Skora göre sırala, en yüksek 5 taneyi al
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = [f for score, f in scored[:5]]
+    return best
 
 
-# ---------------------- Flask Uygulaması ---------------------- #
+# ------------------ (İLERİDE) DEEPSEEK ENTEGRASYONU ------------------ #
+
+def call_deepseek_for_predictions(fixtures: list):
+    """
+    DeepSeek API key geldiğinde gerçek yapay zeka tahmini burada çalışacak.
+    Şimdilik sadece "None" döndürüyoruz.
+    """
+    if not DEEPSEEK_API_KEY:
+        print("ℹ️ DEEPSEEK_API_KEY tanımlı değil, simple mode kullanılıyor.")
+        return None
+
+    # Buraya DeepSeek entegrasyonunu ekleyeceğiz.
+    # Şu an için placeholder:
+    return None
+
+
+# ------------------ TAHMİN ÇALIŞTIRICI ------------------ #
+
+def run_daily_job():
+    """
+    Günlük tahmin işini çalıştırır:
+    - Maçları çeker
+    - (İleride) DeepSeek'ten tahmin alır
+    - Şimdilik basit skor ile en iyi 5 maçı seçer
+    - Telegram'a mesaj gönderir
+    """
+    fixtures = get_today_fixtures()
+    if not fixtures:
+        print("⚠️ Bugün için maç bulunamadı veya API boş döndü.")
+        return {
+            "ok": False,
+            "message": "Bugün için maç bulunamadı."
+        }
+
+    # (Şimdilik) simple mode
+    best_5 = pick_best_5(fixtures)
+
+    lines = ["📊 *Günün Önerilen 5 Maçı* (BETA)"]
+    for f in best_5:
+        home = f["teams"]["home"]["name"]
+        away = f["teams"]["away"]["name"]
+        league = f["league"]["name"]
+        time_utc = f["fixture"]["date"]  # ISO format
+
+        lines.append(f"- {home} vs {away}  \n  _({league})_")
+
+    message = "\n\n".join(lines)
+
+    print("\n--- TELEGRAM MESAJI BAŞLANGIÇ ---")
+    print(message)
+    print("--- TELEGRAM MESAJI BİTİŞ ---\n")
+
+    send_telegram_message(message)
+
+    return {
+        "ok": True,
+        "count": len(best_5),
+        "sent_to_telegram": TELEGRAM_BOT_TOKEN is not None and TELEGRAM_CHAT_ID is not None
+    }
+
+
+# ------------------ FLASK SERVER (RENDER İÇİN ZORUNLU) ------------------ #
 
 app = Flask(__name__)
 
 
 @app.route("/")
 def home():
-    return "Maç Tahmin Sistemi Çalışıyor ✅"
+    return "✅ Maç Tahmin Sistemi Çalışıyor (BETA). /run endpoint'ini kullan."
 
 
 @app.route("/run")
-def run_job():
+def run_endpoint():
     """
-    Bu endpoint çağrıldığında API'den maçları çeker.
-    İleride buraya tahmin modeli + Telegram gönderme ekleriz.
+    Bu endpoint çağrıldığında günlük işi çalıştırır.
+    Cron-job.org veya manuel tarayıcıdan tetikleyebilirsin.
     """
-    df, raw = getir_maclar()
-    if df is None:
-        return jsonify({"ok": False, "message": "API cevabı beklenenden farklı."}), 500
-
-    # Sadece ilk birkaç maçı döndürelim
-    preview = df.head(5).to_dict(orient="records")
-    return jsonify({
-        "ok": True,
-        "toplam_mac": len(df),
-        "ilk_5_mac": preview
-    })
+    result = run_daily_job()
+    return jsonify(result)
 
 
 if __name__ == "__main__":
-    # Render PORT env değişkeni gönderiyor, ona göre dinle
     port = int(os.getenv("PORT", 5000))
     print(f"🚀 Flask server {port} portunda ayağa kalkıyor...")
     app.run(host="0.0.0.0", port=port)
