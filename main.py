@@ -1,47 +1,95 @@
 import os
-import time
-import requests
 from dotenv import load_dotenv
+import requests
+import pandas as pd
+from flask import Flask, jsonify
 
-# .env dosyasını yükle
+# .env dosyasını yükle (lokalde işine yarar, Render'da env panelinden alacağız)
 load_dotenv()
 
 # API Key'i al
 API_KEY = os.getenv("API_KEY")
-print("API KEY yüklendi:", API_KEY)
 
-# Request header
+if not API_KEY:
+    print("❌ API_KEY bulunamadı! Render panelinden ya da .env'den tanımlamalısın.")
+else:
+    print("✅ API_KEY yüklendi (gizli, sadece varlığını kontrol ediyoruz).")
+
 headers = {
     "x-rapidapi-key": API_KEY,
     "x-rapidapi-host": "v3.football.api-sports.io"
 }
 
-# Premier League (39) – 2023 sezonu
-URL = "https://v3.football.api-sports.io/fixtures?league=39&season=2023"
+url = "https://v3.football.api-sports.io/fixtures?league=39&season=2023"
 
 
-def maclari_cek():
-    """API'den maçları çeker ve ekrana yazar"""
-    try:
-        print("\n🔍 API isteği gönderiliyor...")
-        response = requests.get(URL, headers=headers, timeout=15)
+def getir_maclar():
+    """
+    API'den maçları çekip DataFrame olarak döndürür.
+    Şimdilik sadece test amaçlı; ileride buraya model / filtre ekleriz.
+    """
+    print("➡ Maç verileri çekiliyor...")
+    response = requests.get(url, headers=headers)
+    data = response.json()
 
-        if response.status_code != 200:
-            print("❌ API Hatası:", response.status_code, response.text)
-            return
+    # Güvenlik amaçlı log
+    if "response" not in data:
+        print("⚠ Beklenmeyen API cevabı:", data)
+        return None, data
 
-        data = response.json()
-        print("✅ API cevabı alındı!")
-        print(data)
+    # Basit bir DataFrame örneği
+    fixtures = data["response"]
+    rows = []
+    for f in fixtures:
+        try:
+            row = {
+                "tarih": f["fixture"]["date"],
+                "ev": f["teams"]["home"]["name"],
+                "deplasman": f["teams"]["away"]["name"],
+                "lig": f["league"]["name"],
+                "ülke": f["league"]["country"],
+                "durum": f["fixture"]["status"]["short"],
+            }
+            rows.append(row)
+        except Exception as e:
+            print("Satır parse edilirken hata:", e)
 
-    except Exception as e:
-        print("⚠️ İstek sırasında hata oluştu:", e)
+    df = pd.DataFrame(rows)
+    print(f"✅ Toplam {len(df)} maç çekildi.")
+    return df, data
 
 
-print("\n🚀 Sistem başladı! Render kapanmaması için sürekli çalışıyor...\n")
+# ---------------------- Flask Uygulaması ---------------------- #
 
-# Sonsuz döngü (Render kapanmasın)
-while True:
-    maclari_cek()
-    print("⏳ Bir sonraki istek 1 saat sonra...")
-    time.sleep(3600)  # 1 saat bekle
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Maç Tahmin Sistemi Çalışıyor ✅"
+
+
+@app.route("/run")
+def run_job():
+    """
+    Bu endpoint çağrıldığında API'den maçları çeker.
+    İleride buraya tahmin modeli + Telegram gönderme ekleriz.
+    """
+    df, raw = getir_maclar()
+    if df is None:
+        return jsonify({"ok": False, "message": "API cevabı beklenenden farklı."}), 500
+
+    # Sadece ilk birkaç maçı döndürelim
+    preview = df.head(5).to_dict(orient="records")
+    return jsonify({
+        "ok": True,
+        "toplam_mac": len(df),
+        "ilk_5_mac": preview
+    })
+
+
+if __name__ == "__main__":
+    # Render PORT env değişkeni gönderiyor, ona göre dinle
+    port = int(os.getenv("PORT", 5000))
+    print(f"🚀 Flask server {port} portunda ayağa kalkıyor...")
+    app.run(host="0.0.0.0", port=port)
