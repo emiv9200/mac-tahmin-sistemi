@@ -238,6 +238,7 @@ def run_endpoint():
 
 
 if __name__ == "__main__":
+    send_telegram_message("TEST MESAJI — sistem çalışıyor 🚀")
     port = int(os.getenv("PORT", 5000))
     print(f"🚀 Flask server {port} portunda ayağa kalkıyor...")
     app.run(host="0.0.0.0", port=port)
