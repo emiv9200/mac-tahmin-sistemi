@@ -1,33 +1,22 @@
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import os
 
-DB_NAME = "data.db"
+DB_URL = os.getenv("DB_URL")
 
 def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """PostgreSQL bağlantısı açar."""
+    try:
+        conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+        return conn
+    except Exception as e:
+        print("❌ DB bağlantı hatası:", e)
+        return None
 
-def init_db():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS matches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fixture_id INTEGER,
-        league_id INTEGER,
-        date TEXT,
-        home_team TEXT,
-        away_team TEXT,
-        home_form TEXT,
-        away_form TEXT,
-        home_xg REAL,
-        away_xg REAL,
-        home_shots INTEGER,
-        away_shots INTEGER,
-        created_at TEXT
-    );
-    """)
-
-    conn.commit()
-    conn.close()
+def close_db(conn):
+    """Bağlantıyı kapatır."""
+    try:
+        if conn:
+            conn.close()
+    except:
+        pass
