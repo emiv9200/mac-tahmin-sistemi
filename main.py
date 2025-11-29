@@ -18,7 +18,7 @@ HEADERS = {
 }
 
 # Premier League, Bundesliga, La Liga, Ligue 1
-TARGET_LEAGUES = [39, 78, 140, 61]
+TARGET_LEAGES = [39, 78, 140, 61]
 
 
 # ------------------ TELEGRAM ------------------ #
@@ -49,20 +49,17 @@ def send_telegram_message(text: str) -> None:
 # ------------------ MAÇ ÇEKME ------------------ #
 
 def get_today_fixtures():
-    """
-    Bugünün maçlarını API-FOOTBALL'dan çeker
-    ve hedef liglere göre filtreler.
-    """
+    """Bugünün maçlarını çeker ve hedef liglere göre filtreler."""
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     print(f"📅 {today_str} tarihli maçlar çekiliyor...")
 
-    url = f"{API_BASE_URL}/fixtures"
-    params = {
-        "date": today_str,
-        "timezone": "Europe/Istanbul"
-    }
-
     try:
+        url = f"{API_BASE_URL}/fixtures"
+        params = {
+            "date": today_str,
+            "timezone": "Europe/Istanbul"
+        }
+
         r = requests.get(url, headers=HEADERS, params=params, timeout=20)
         if r.status_code != 200:
             print("❌ API Hatası:", r.status_code, r.text)
@@ -73,10 +70,10 @@ def get_today_fixtures():
 
         filtered = [
             f for f in fixtures
-            if f.get("league", {}).get("id") in TARGET_LEAGUES
+            if f.get("league", {}).get("id") in TARGET_LEAGES
         ]
 
-        print(f"✅ Toplam {len(filtered)} maç bulundu (filtrelenmiş).")
+        print(f"✅ {len(filtered)} maç bulundu.")
         return filtered
 
     except Exception as e:
@@ -87,68 +84,48 @@ def get_today_fixtures():
 # ------------------ DEEPSEEK TAHMİN ------------------ #
 
 def deepseek_predict(home: str, away: str, league: str) -> str:
-    """
-    DeepSeek'ten profesyonel analiz ister.
-    Çıktıyı ham metin olarak döner (Telegram'da direkt gösteriyoruz).
-    """
+    """DeepSeek'ten profesyonel analiz alır."""
     if not DEEPSEEK_API_KEY:
-        print("ℹ️ DEEPSEEK_API_KEY tanımlı değil, AI tahmini atlanıyor.")
-        return "_(AI tahmini yapılamadı – DEEPSEEK_API_KEY eksik)_"
+        return "_(AI tahmini yok – DEEPSEEK_API_KEY eksik)_"
 
     prompt = f"""
-Sen üst seviye profesyonel futbol analisti bir yapay zekasın. 
-Aşağıdaki maç için form, gol ortalamaları, risk ve oran mantığını kullanarak 
-detaylı ve yüzdelik tahmin hazırla.
+Sen profesyonel futbol analisti bir yapay zekasın. Aşağıdaki maç için detaylı ve yüzdelik tahmin hazırla:
 
 MAÇ: {home} vs {away}
 LİG: {league}
 
-FORMAT (Bu formatın dışına ÇIKMA):
-
-🏆 Tahmin Özeti:
+FORMAT:
 - Ev Kazanır: %..
 - Beraberlik: %..
 - Deplasman Kazanır: %..
 - KG Var: %..
-- Toplam Gol Tahmini: .. (ör: 2–4)
-- Alt/Üst Tahmini: Alt / Üst
-- KG&Üst Kombin: %..
+- Toplam Gol Tahmini: ..
+- Alt/Üst Tahmini: ..
+- En Güvenilir Tahmin: ..
+- Güven Yüzdesi: %..
 
-📊 Detaylı Analiz:
-- Ev takımı son 5 maç formu:
-- Deplasman takımı son 5 maç formu:
-- Gol ortalamaları:
-- Ev/deplasman performansı:
-- Önemli eksikler:
-- En güvenilir tahmin:
-- Güven yüzdesi (%..)
-
-Sadece bu formatta Türkçe cevap ver.
+Sadece Türkçe cevap ver.
     """.strip()
 
     try:
         resp = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
+            "https://api.deepseek.com/chat/completions",
             headers={
                 "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                 "Content-Type": "application/json"
             },
             json={
                 "model": "deepseek-chat",
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ]
+                "messages": [{"role": "user", "content": prompt}]
             },
-            timeout=30,
+            timeout=25,
         )
 
         if resp.status_code != 200:
             print("❌ DeepSeek API hatası:", resp.status_code, resp.text)
             return "_(AI tahmini alınamadı – API hatası)_"
 
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"].strip()
-        print(f"🤖 DeepSeek tahmini alındı: {home} vs {away}")
+        content = resp.json()["choices"][0]["message"]["content"].strip()
         return content
 
     except Exception as e:
@@ -156,50 +133,37 @@ Sadece bu formatta Türkçe cevap ver.
         return "_(AI tahmini alınırken hata oluştu)_"
 
 
-# ------------------ FORMAT - VIP KART ------------------ #
+# ------------------ MAÇ KARTI FORMAT ------------------ #
 
 def format_match_card(fixture: dict, ai_text: str) -> str:
-    """Tek maç için şık bir kart oluşturur."""
+    """Tek maç için şık kart oluşturur."""
     home = fixture["teams"]["home"]["name"]
     away = fixture["teams"]["away"]["name"]
     league = fixture["league"]["name"]
+    time_str = fixture["fixture"]["date"][11:16]
 
-    # ISO tarih -> "HH:MM"
-    raw_date = fixture["fixture"]["date"]
-    time_str = raw_date[11:16]
-
-    card = f"""
+    return f"""
 ———————————————
 ⚽ *MAÇ*: {home} – {away}
 🏆 *Lig*: {league}
 🕒 *Saat*: {time_str}
 
-🤖 *DeepSeek Analizi*:
+🧠 *Fatih Koç Tahmini*:
 {ai_text}
 ———————————————
 """
-    return card
 
 
 # ------------------ JOB ------------------ #
 
 def run_daily_job():
-    """
-    Günlük işi çalıştırır:
-    - Maçları çeker
-    - En fazla 5 maç için DeepSeek tahmini alır
-    - Şık bir Telegram mesajı gönderir
-    """
     fixtures = get_today_fixtures()
     if not fixtures:
-        msg = "⚠️ Bugün hedef liglerde maç bulunamadı."
-        print(msg)
+        msg = "⚠️ Bugün hedef liglerde maç yok."
         send_telegram_message(msg)
-        return {"ok": False, "msg": msg}
+        return {"ok": False}
 
-    # Render / DeepSeek için aşırı istek atmamak adına en fazla 5 maç
-    max_matches = min(5, len(fixtures))
-    selected = fixtures[:max_matches]
+    selected = fixtures[:5]  # en fazla 5 maç
 
     cards = []
     for f in selected:
@@ -212,12 +176,11 @@ def run_daily_job():
 
     final_message = (
         "🔥 *GÜNÜN VIP MAÇ TAHMİNLERİ* 🔥\n"
-        "_(Deneme / Beta sürüm – sadece bilgi amaçlıdır)_\n\n"
+        "_(Deneme / Beta sürüm)_\n\n"
         + "\n".join(cards)
     )
 
     send_telegram_message(final_message)
-
     return {"ok": True, "count": len(cards)}
 
 
@@ -228,17 +191,16 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Maç Tahmin Sistemi Çalışıyor. /run ile manuel tetikleyebilirsin."
+    return "✅ Maç Tahmin Sistemi Çalışıyor — /run ile tetikleyebilirsin."
 
 
 @app.route("/run")
 def run_endpoint():
-    result = run_daily_job()
-    return jsonify(result)
+    return jsonify(run_daily_job())
 
 
 if __name__ == "__main__":
-    send_telegram_message("TEST MESAJI — sistem çalışıyor 🚀")
+    send_telegram_message("TEST MESAJI — Sistem aktif 🚀")
     port = int(os.getenv("PORT", 5000))
     print(f"🚀 Flask server {port} portunda ayağa kalkıyor...")
     app.run(host="0.0.0.0", port=port)
