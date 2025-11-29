@@ -41,6 +41,9 @@ TARGET_LEAGUES = [
     203,  # Super Lig
 ]
 
+# FIXED STAKE AMOUNT
+STAKE_AMOUNT = 50  # 50 TL fixed stake
+
 def send_telegram_message(text: str, parse_mode="Markdown", disable_preview=True):
     """Send message to Telegram"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -239,7 +242,7 @@ def analyze_and_update_predictions():
     return analyzed_count
 
 def format_prediction_message(match):
-    """Format prediction message for Telegram"""
+    """Format prediction message for Telegram with profit potential"""
     risk_emoji = {
         'LOW': '🟢',
         'MEDIUM': '🟡',
@@ -247,6 +250,28 @@ def format_prediction_message(match):
     }.get(match.get('risk_level', 'HIGH'), '⚪')
     
     match_time = match['match_date'].strftime('%H:%M') if isinstance(match['match_date'], datetime) else str(match['match_date'])[11:16]
+    
+    # Calculate profit potential
+    stake = STAKE_AMOUNT
+    recommended_bet = match.get('recommended_bet', 'SKIP')
+    
+    # Find the odds for the recommended bet
+    odds = 0
+    if 'Home Win' in recommended_bet or 'HOME_WIN' in match.get('ai_prediction', ''):
+        odds = match.get('home_odds', 0)
+    elif 'Away Win' in recommended_bet or 'AWAY_WIN' in match.get('ai_prediction', ''):
+        odds = match.get('away_odds', 0)
+    elif 'Draw' in recommended_bet or 'DRAW' in match.get('ai_prediction', ''):
+        odds = match.get('draw_odds', 0)
+    elif 'Over' in recommended_bet or 'OVER_2.5' in match.get('ai_prediction', ''):
+        odds = match.get('over_2_5_odds', 0)
+    elif 'Under' in recommended_bet or 'UNDER_2.5' in match.get('ai_prediction', ''):
+        odds = match.get('under_2_5_odds', 0)
+    elif 'BTTS' in recommended_bet or 'BTTS_YES' in match.get('ai_prediction', ''):
+        odds = match.get('btts_yes_odds', 0)
+    
+    potential_win = round(stake * odds, 2) if odds > 0 else 0
+    potential_profit = round(potential_win - stake, 2) if potential_win > 0 else 0
     
     message = f"""
 {'='*40}
@@ -265,16 +290,20 @@ AI PREDICTION
 Confidence: {match.get('ai_confidence', 0):.0f}%
 Analysis: {match.get('ai_reasoning', 'No analysis')}
 Risk: {match.get('risk_level', 'HIGH')}
+
+💰 POTENTIAL ({stake} TL)
+Win: {potential_win:.2f} TL
+Profit: +{potential_profit:.2f} TL
 {'='*40}
 """
     return message.strip()
 
-def send_daily_predictions(min_confidence=60, max_risk='MEDIUM'):
-    """Send predictions to Telegram"""
+def send_daily_predictions(min_confidence=70, max_risk='LOW'):
+    """Send predictions to Telegram - ONLY LOW RISK"""
     print("\nSending predictions to Telegram...\n")
     
     risk_levels = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3}
-    max_risk_value = risk_levels.get(max_risk, 2)
+    max_risk_value = risk_levels.get(max_risk, 1)  # Default to LOW
     
     query = """
         SELECT 
@@ -298,6 +327,7 @@ def send_daily_predictions(min_confidence=60, max_risk='MEDIUM'):
         print("  No predictions to send")
         return 0
     
+    # Filter by risk level
     filtered_matches = [
         m for m in matches 
         if risk_levels.get(m.get('risk_level', 'HIGH'), 3) <= max_risk_value
@@ -307,12 +337,38 @@ def send_daily_predictions(min_confidence=60, max_risk='MEDIUM'):
         print(f"  No predictions matching risk level: {max_risk}")
         return 0
     
+    # Calculate total potential profit
+    total_potential = 0
+    for match in filtered_matches:
+        recommended_bet = match.get('recommended_bet', 'SKIP')
+        odds = 0
+        
+        if 'Home Win' in recommended_bet or 'HOME_WIN' in match.get('ai_prediction', ''):
+            odds = match.get('home_odds', 0)
+        elif 'Away Win' in recommended_bet or 'AWAY_WIN' in match.get('ai_prediction', ''):
+            odds = match.get('away_odds', 0)
+        elif 'Draw' in recommended_bet or 'DRAW' in match.get('ai_prediction', ''):
+            odds = match.get('draw_odds', 0)
+        elif 'Over' in recommended_bet or 'OVER_2.5' in match.get('ai_prediction', ''):
+            odds = match.get('over_2_5_odds', 0)
+        elif 'Under' in recommended_bet or 'UNDER_2.5' in match.get('ai_prediction', ''):
+            odds = match.get('under_2_5_odds', 0)
+        elif 'BTTS' in recommended_bet:
+            odds = match.get('btts_yes_odds', 0)
+        
+        if odds > 0:
+            profit = (STAKE_AMOUNT * odds) - STAKE_AMOUNT
+            total_potential += profit
+    
     header = f"""
-DAILY VIP PREDICTIONS
-Date: {datetime.now().strftime('%d.%m.%Y')}
-Total: {len(filtered_matches)} matches
+🔥 DAILY VIP PREDICTIONS 🔥
+📅 {datetime.now().strftime('%d.%m.%Y')}
+🎯 Total: {len(filtered_matches)} matches
 
-Min Confidence: {min_confidence}% | Max Risk: {max_risk}
+💰 TOTAL POTENTIAL PROFIT
+{total_potential:.2f} TL (if all correct)
+
+📊 Filter: Min {min_confidence}% | Max Risk: {max_risk}
 """
     
     send_telegram_message(header)
@@ -342,8 +398,9 @@ Min Confidence: {min_confidence}% | Max Risk: {max_risk}
     
     footer = f"""
 {'='*40}
-Sent: {sent_count} predictions
-Powered by DeepSeek AI
+✅ {sent_count} predictions sent
+🤖 Powered by DeepSeek AI
+💰 Stake: {STAKE_AMOUNT} TL per match
 {'='*40}
 """
     send_telegram_message(footer)
@@ -409,7 +466,7 @@ def check_and_update_results():
             elif 'BTTS_YES' in prediction and home_score > 0 and away_score > 0:
                 is_correct = True
             
-            stake = 10
+            stake = STAKE_AMOUNT
             profit_loss = -stake
             
             if is_correct:
@@ -469,7 +526,7 @@ def send_daily_report():
     stats = get_performance_stats(days=1)
     
     if not stats or stats['total_predictions'] == 0:
-        send_telegram_message("No predictions to report today.")
+        send_telegram_message("📊 No predictions to report today.")
         return
     
     total = stats['total_predictions']
@@ -478,20 +535,20 @@ def send_daily_report():
     profit = stats['total_profit_loss'] or 0
     
     report = f"""
-DAILY PERFORMANCE REPORT
-Date: {datetime.now().strftime('%d.%m.%Y')}
+📊 DAILY PERFORMANCE REPORT
+📅 {datetime.now().strftime('%d.%m.%Y')}
 
 {'='*40}
-STATISTICS
+📈 STATISTICS
 Total Predictions: {total}
-Correct: {correct}
-Wrong: {total - correct}
+Correct: {correct} ✅
+Wrong: {total - correct} ❌
 Accuracy: {accuracy:.1f}%
 
-FINANCIAL
+💰 FINANCIAL ({STAKE_AMOUNT} TL/match)
 Profit/Loss: {profit:+.2f} TL
 
-Average Confidence: {stats.get('avg_confidence', 0):.1f}%
+⭐ Average Confidence: {stats.get('avg_confidence', 0):.1f}%
 {'='*40}
 """
     
@@ -507,6 +564,7 @@ def home():
         "status": "running",
         "service": "Football Match Prediction System",
         "version": "2.0",
+        "stake_amount": STAKE_AMOUNT,
         "endpoints": {
             "/setup": "Create database tables (run once)",
             "/collect": "Collect today's matches",
@@ -571,8 +629,8 @@ def analyze_endpoint():
 @app.route("/send")
 def send_endpoint():
     try:
-        min_confidence = int(request.args.get('min_confidence', 60))
-        max_risk = request.args.get('max_risk', 'MEDIUM')
+        min_confidence = int(request.args.get('min_confidence', 70))
+        max_risk = request.args.get('max_risk', 'LOW')
         
         count = send_daily_predictions(min_confidence, max_risk)
         return jsonify({"success": True, "sent": count})
@@ -630,6 +688,8 @@ if __name__ == "__main__":
     print("="*60)
     print(f"Server: http://0.0.0.0:{port}")
     print(f"Target Leagues: {len(TARGET_LEAGUES)}")
+    print(f"Stake Amount: {STAKE_AMOUNT} TL")
+    print(f"Risk Filter: LOW only")
     print(f"DeepSeek AI: {'OK' if DEEPSEEK_API_KEY else 'NOT CONFIGURED'}")
     print(f"Telegram: {'OK' if TELEGRAM_BOT_TOKEN else 'NOT CONFIGURED'}")
     print("="*60 + "\n")
