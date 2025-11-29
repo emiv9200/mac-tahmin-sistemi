@@ -508,6 +508,7 @@ def home():
         "service": "Football Match Prediction System",
         "version": "2.0",
         "endpoints": {
+            "/setup": "Create database tables (run once)",
             "/collect": "Collect today's matches",
             "/analyze": "Analyze with DeepSeek AI",
             "/send": "Send predictions to Telegram",
@@ -517,6 +518,39 @@ def home():
             "/stats": "Performance statistics"
         }
     })
+
+@app.route("/setup")
+def setup_endpoint():
+    """Create database tables - run once!"""
+    try:
+        print("\n" + "="*60)
+        print("CREATING DATABASE TABLES...")
+        print("="*60 + "\n")
+        
+        from create_tables import create_tables
+        create_tables()
+        
+        return jsonify({
+            "success": True,
+            "message": "Database tables created successfully!",
+            "tables": [
+                "predictions",
+                "match_stats", 
+                "telegram_logs",
+                "performance_summary"
+            ],
+            "views": [
+                "pending_predictions",
+                "daily_performance"
+            ],
+            "next_step": "Run /run endpoint to start collecting matches"
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "Failed to create tables. Check logs for details."
+        }), 500
 
 @app.route("/collect")
 def collect_endpoint():
@@ -573,7 +607,7 @@ def run_endpoint():
         results['analyzed'] = analyze_and_update_predictions()
         
         print("Step 3: Sending to Telegram...")
-        results['sent'] = send_daily_predictions(min_confidence=65, max_risk='MEDIUM')
+        results['sent'] = send_daily_predictions(min_confidence=70, max_risk='LOW')
         
         return jsonify({"success": True, **results})
     except Exception as e:
