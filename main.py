@@ -20,7 +20,9 @@ HEADERS = {
 TARGET_LEAGUES = [39, 78, 140, 61]  # Premier, Bundesliga, La Liga, Ligue1
 
 
-# ------------------ SEND TO TELEGRAM ------------------ #
+# ============================================================
+#                    TELEGRAM GÖNDERİMİ
+# ============================================================
 
 def send_telegram_message(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -35,33 +37,34 @@ def send_telegram_message(text):
     }
 
     try:
-        requests.post(url, json=payload, timeout=10)
-        print("📨 Telegram gönderildi")
+        resp = requests.post(url, json=payload, timeout=10)
+        print("📨 Telegram gönderildi:", resp.status_code)
     except Exception as e:
         print("⚠️ Telegram hata:", e)
 
 
-# ------------------ MAC ÇEKME ------------------ #
+# ============================================================
+#                 MAÇ VERİSİ ÇEKME
+# ============================================================
 
 def get_today_fixtures():
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
 
     url = f"{API_BASE_URL}/fixtures"
-    params = {
-        "date": today_str,
-        "timezone": "Europe/Istanbul"
-    }
+    params = {"date": today_str, "timezone": "Europe/Istanbul"}
 
     try:
         r = requests.get(url, headers=HEADERS, params=params, timeout=20)
         data = r.json()
 
         fixtures = data.get("response", [])
+
         filtered = [
             f for f in fixtures
             if f.get("league", {}).get("id") in TARGET_LEAGUES
         ]
 
+        print(f"📌 Toplam maç: {len(filtered)}")
         return filtered
 
     except Exception as e:
@@ -69,7 +72,9 @@ def get_today_fixtures():
         return []
 
 
-# ------------------ DEEPSEEK TAHMİN ------------------ #
+# ============================================================
+#               DEEPSEEK TAHMİN (AI MODEL)
+# ============================================================
 
 def deepseek_predict(home, away, league):
     if not DEEPSEEK_API_KEY:
@@ -81,8 +86,8 @@ def deepseek_predict(home, away, league):
         }
 
     prompt = f"""
-Sen profesyonel futbol veri analisti bir AI'sın. 
-Aşağıdaki maç için yüzdesel olasılıklarla tahmin yap:
+Sen profesyonel futbol veri analisti bir yapay zekasın.
+Aşağıdaki maç için yüzdesel ihtimaller ve güven skoru ver:
 
 MAÇ: {home} vs {away}
 LİG: {league}
@@ -91,7 +96,7 @@ Dönüş formatı:
 
 Ev Kazanır: %..
 KG Var: %..
-Gol Aralığı: (ör: 1–3)
+Gol Aralığı: ..
 Güven Skoru: %..
 """
 
@@ -109,15 +114,28 @@ Güven Skoru: %..
             timeout=20
         )
 
-        output = r.json()["choices"][0]["message"]["content"]
-        lines = output.split("\n")
+        content = r.json()["choices"][0]["message"]["content"]
+        lines = [l.strip() for l in content.split("\n") if l.strip()]
 
-        return {
-            "home_win": lines[0].replace("Ev Kazanır:", "").strip(),
-            "btts": lines[1].replace("KG Var:", "").strip(),
-            "goals": lines[2].replace("Gol Aralığı:", "").strip(),
-            "confidence": lines[3].replace("Güven Skoru:", "").strip()
+        # Hataya dayanıklı ayrıştırma
+        parsed = {
+            "home_win": "N/A",
+            "btts": "N/A",
+            "goals": "N/A",
+            "confidence": "N/A"
         }
+
+        for line in lines:
+            if line.startswith("Ev") or "Ev Kazanır" in line:
+                parsed["home_win"] = line.split(":", 1)[-1].strip()
+            elif line.startswith("KG"):
+                parsed["btts"] = line.split(":", 1)[-1].strip()
+            elif "Gol" in line:
+                parsed["goals"] = line.split(":", 1)[-1].strip()
+            elif "Güven" in line:
+                parsed["confidence"] = line.split(":", 1)[-1].strip()
+
+        return parsed
 
     except Exception as e:
         print("❌ DeepSeek hata:", e)
@@ -129,7 +147,9 @@ Güven Skoru: %..
         }
 
 
-# ------------------ FORMAT - VIP KART ------------------ #
+# ============================================================
+#                   VIP MAÇ KARTI FORMAT
+# ============================================================
 
 def format_match_card(fixture, ai):
     home = fixture["teams"]["home"]["name"]
@@ -152,7 +172,9 @@ def format_match_card(fixture, ai):
 """
 
 
-# ------------------ JOB ------------------ #
+# ============================================================
+#                     GÜNLÜK JOB
+# ============================================================
 
 def run_daily_job():
     fixtures = get_today_fixtures()
@@ -160,7 +182,9 @@ def run_daily_job():
         return {"ok": False, "msg": "Bugün maç yok"}
 
     cards = []
-    for f in fixtures[:5]:  # en iyi 5 maç
+    limit = min(5, len(fixtures))  # 5 taneden fazla maç yoksa hata verme
+
+    for f in fixtures[:limit]:
         home = f["teams"]["home"]["name"]
         away = f["teams"]["away"]["name"]
         league = f["league"]["name"]
@@ -175,7 +199,9 @@ def run_daily_job():
     return {"ok": True, "count": len(cards)}
 
 
-# ------------------ FLASK ------------------ #
+# ============================================================
+#                      FLASK SERVER
+# ============================================================
 
 app = Flask(__name__)
 
