@@ -2,8 +2,9 @@ import os
 import requests
 from datetime import datetime
 from flask import Flask, jsonify
+from database import get_db, close_db  # database.py dosyasından gelecek
 
-# ------------------ ENV ------------------ #
+# ------------------ Environment Variables ------------------ #
 
 API_KEY = os.getenv("API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -17,15 +18,17 @@ HEADERS = {
     "x-rapidapi-host": "v3.football.api-sports.io"
 }
 
-# Premier League, Bundesliga, La Liga, Ligue 1
-TARGET_LEAGUES = [39, 78, 140, 61]
+TARGET_LEAGUES = [39, 78, 140, 61]   # PL, Bundesliga, La Liga, Ligue 1
 
 
-# ------------------ TELEGRAM ------------------ #
+# -------------------------------------------------------------
+#                     TELEGRAM MESSAGE
+# -------------------------------------------------------------
 
-def send_telegram_message(text: str) -> None:
+def send_telegram_message(text: str):
+    """Telegram'a mesaj gönderir."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram bilgisi eksik")
+        print("⚠️ Telegram bilgisi yok.")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -36,213 +39,72 @@ def send_telegram_message(text: str) -> None:
     }
 
     try:
-        requests.post(url, json=payload, timeout=15)
-        print("📨 Telegram gönderildi")
+        requests.post(url, json=payload)
     except Exception as e:
-        print("⚠️ Telegram hata:", e)
+        print("⚠️ Telegram gönderim hatası:", e)
 
 
-# ------------------ MAÇ ÇEKME ------------------ #
+# -------------------------------------------------------------
+#                   BUGÜNÜN MAÇLARINI ÇEKME
+# -------------------------------------------------------------
 
 def get_today_fixtures():
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    print(f"📅 {today_str} maçlar çekiliyor...")
-
     url = f"{API_BASE_URL}/fixtures"
     params = {"date": today_str, "timezone": "Europe/Istanbul"}
 
     try:
-        r = requests.get(url, headers=HEADERS, params=params, timeout=20)
-        if r.status_code != 200:
-            print("❌ API Error:", r.status_code, r.text)
-            return []
-
+        r = requests.get(url, headers=HEADERS, params=params)
         fixtures = r.json().get("response", [])
-
-        filtered = [
-            f for f in fixtures
-            if f.get("league", {}).get("id") in TARGET_LEAGUES
-        ]
-        print("✅ Bulunan maç:", len(filtered))
-        return filtered
-
-    except Exception as e:
-        print("❌ Fixture Error:", e)
-        return []
-
-
-# ------------------ TAKIM SON 10 MAÇ ------------------ #
-
-def get_team_last_matches(team_id: int, limit=10):
-    url = f"{API_BASE_URL}/fixtures"
-    params = {"team": team_id, "last": limit}
-
-    try:
-        r = requests.get(url, headers=HEADERS, params=params, timeout=20)
-        return r.json().get("response", [])
+        return [f for f in fixtures if f["league"]["id"] in TARGET_LEAGUES]
     except:
         return []
 
 
-# ------------------ H2H ------------------ #
+# -------------------------------------------------------------
+#                   VERITABANINA KAYDETME
+# -------------------------------------------------------------
 
-def get_h2h_matches(home_id: int, away_id: int, limit=5):
-    url = f"{API_BASE_URL}/fixtures/headtohead"
-    params = {"h2h": f"{home_id}-{away_id}", "last": limit}
+def save_prediction(match_id, home, away, league, match_date, ai_text):
+    conn = get_db()
+    if not conn:
+        return
 
-    try:
-        r = requests.get(url, headers=HEADERS, params=params, timeout=20)
-        return r.json().get("response", [])
-    except:
-        return []
+    cur = conn.cursor()
 
+    cur.execute("""
+        INSERT INTO predictions (match_id, home_team, away_team, league, match_date, ai_prediction)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (match_id, home, away, league, match_date, ai_text))
 
-# ------------------ İSTATİSTİK ------------------ #
-
-def compute_team_stats(team_id: int, matches: list) -> dict:
-    total = len(matches)
-    if total == 0:
-        return {"matches": 0}
-
-    win = draw = loss = 0
-    gf = ga = 0
-    btts = over25 = 0
-    cs = fts = 0
-
-    for m in matches:
-        gh = m["goals"]["home"]
-        ga_ = m["goals"]["away"]
-        home = m["teams"]["home"]["id"]
-
-        team_goals = gh if team_id == home else ga_
-        opp_goals = ga_ if team_id == home else gh
-
-        if team_goals > opp_goals: win += 1
-        elif team_goals == opp_goals: draw += 1
-        else: loss += 1
-
-        gf += team_goals
-        ga += opp_goals
-
-        if gh > 0 and ga_ > 0: btts += 1
-        if gh + ga_ >= 3: over25 += 1
-        if opp_goals == 0: cs += 1
-        if team_goals == 0: fts += 1
-
-    def pct(x): return round(x / total * 100, 1)
-
-    return {
-        "matches": total,
-        "win": win,
-        "draw": draw,
-        "loss": loss,
-        "avg_gf": round(gf / total, 2),
-        "avg_ga": round(ga / total, 2),
-        "avg_total": round((gf + ga) / total, 2),
-        "btts_ratio": pct(btts),
-        "over25_ratio": pct(over25),
-        "clean_sheet_ratio": pct(cs),
-        "failed_to_score_ratio": pct(fts),
-    }
+    conn.commit()
+    close_db(conn)
 
 
-def format_stats_for_prompt(name, st):
-    if st["matches"] == 0:
-        return f"- {name}: Veri yok.\n"
+# -------------------------------------------------------------
+#                   DEEPSEEK TAHMİN (AI)
+# -------------------------------------------------------------
 
-    return (
-        f"- {name} (Son {st['matches']} maç):\n"
-        f"  • G-B-M: {st['win']}-{st['draw']}-{st['loss']}\n"
-        f"  • Attığı gol ort.: {st['avg_gf']} | Yediği gol ort.: {st['avg_ga']}\n"
-        f"  • Toplam gol ort.: {st['avg_total']}\n"
-        f"  • KG Var: %{st['btts_ratio']}\n"
-        f"  • 2.5 Üst: %{st['over25_ratio']}\n"
-        f"  • Gol yememe: %{st['clean_sheet_ratio']}\n"
-        f"  • Gol atamama: %{st['failed_to_score_ratio']}\n"
-    )
-
-
-def format_h2h_stats(name1, name2, matches):
-    total = len(matches)
-    if total == 0:
-        return "- H2H: Veri yok.\n"
-
-    h = a = d = 0
-    total_goals = btts = o25 = 0
-
-    for m in matches:
-        gh = m["goals"]["home"]
-        ga = m["goals"]["away"]
-        home = m["teams"]["home"]["name"]
-
-        total_goals += (gh + ga)
-        if gh > 0 and ga > 0: btts += 1
-        if gh + ga >= 3: o25 += 1
-
-        if gh > ga: win = m["teams"]["home"]["name"]
-        elif gh < ga: win = m["teams"]["away"]["name"]
-        else: win = "draw"
-
-        if win == name1: h += 1
-        elif win == name2: a += 1
-        else: d += 1
-
-    return (
-        f"- H2H (Son {total}): {name1}: {h}, {name2}: {a}, Beraberlik: {d}\n"
-        f"  • Ortalama gol: {round(total_goals/total, 2)}\n"
-        f"  • KG Var: %{round(btts/total*100,1)}\n"
-        f"  • 2.5 Üst: %{round(o25/total*100,1)}\n"
-    )
-
-
-# ------------------ DEEPSEEK ------------------ #
-
-def deepseek_predict(home, away, league, hs, as_, h2h_text):
+def deepseek_predict(home, away, league):
+    """DeepSeek API ile basit formatta tahmin alır."""
     if not DEEPSEEK_API_KEY:
-        return "_(AI tahmini yapılamadı – API KEY eksik)_"
-
-    stats_block = (
-        "📊 İSTATİSTİK ÖZETİ:\n" +
-        format_stats_for_prompt(home["name"], hs) +
-        "\n" +
-        format_stats_for_prompt(away["name"], as_) +
-        "\n" +
-        h2h_text +
-        "\n"
-    )
+        return "(Tahmin alınamadı – API KEY yok)"
 
     prompt = f"""
-Aşağıdaki maç için yüzdelik ve profesyonel futbol analizi üret.
-
-MAÇ: {home['name']} vs {away['name']}
+MAÇ: {home} vs {away}
 LİG: {league}
 
-{stats_block}
+Bu maç için yüzdelikli tahmin ver.
 
 FORMAT:
-
-🏆 Tahmin Özeti:
-- Ev Kazanır: %..
-- Beraberlik: %..
-- Deplasman Kazanır: %..
-- KG Var: %..
-- Toplam Gol Tahmini: ..
-- Alt/Üst Tahmini: Alt / Üst
-- KG&Üst Kombin: %..
-
-📊 Detaylı Analiz:
-- Ev formu:
-- Deplasman formu:
-- Gol ortalamaları:
-- Ev/deplasman performansı:
-- Önemli eksikler:
-- En güvenilir tahmin:
-- Güven yüzdesi (%..)
-"""
+Ev Kazanır: %..
+Beraberlik: %..
+Deplasman Kazanır: %..
+""".strip()
 
     try:
         resp = requests.post(
-            "https://api.deepseek.com/chat/completions",    # YENİ ENDPOINT
+            "https://api.deepseek.com/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                 "Content-Type": "application/json"
@@ -250,20 +112,19 @@ FORMAT:
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=40,
+            }
         )
 
-        if resp.status_code != 200:
-            return "_(AI tahmini alınamadı – API hatası)_"
+        return resp.json()["choices"][0]["message"]["content"]
 
-        return resp.json()["choices"][0]["message"]["content"].strip()
-
-    except Exception:
-        return "_(AI tahmini alınırken hata oluştu)_"
+    except Exception as e:
+        print("DeepSeek API error:", e)
+        return "(AI hata verdi)"
 
 
-# ------------------ FORMAT ------------------ #
+# -------------------------------------------------------------
+#                   MAÇ KARTI FORMAT
+# -------------------------------------------------------------
 
 def format_match_card(f, ai_text):
     home = f["teams"]["home"]["name"]
@@ -277,61 +138,163 @@ def format_match_card(f, ai_text):
 🏆 *Lig*: {league}
 🕒 *Saat*: {time_str}
 
-🤖 *Fatih Koç Tahmini (AI Destekli)*:
+🤖 *Fatih Koç Tahmini (AI)*:
 {ai_text}
 ———————————————
 """
 
 
-# ------------------ JOB ------------------ #
+# -------------------------------------------------------------
+#             GÜNLÜK TAHMİN ÜRETME (CRON → /run)
+# -------------------------------------------------------------
 
 def run_daily_job():
     fixtures = get_today_fixtures()
+
     if not fixtures:
         send_telegram_message("⚠️ Bugün maç yok.")
         return {"ok": False}
 
-    selected = fixtures[:5]
-    cards = []
+    messages = []
 
-    for f in selected:
-        h = f["teams"]["home"]
-        a = f["teams"]["away"]
+    for f in fixtures[:5]:  # max 5 maç
+        home = f["teams"]["home"]["name"]
+        away = f["teams"]["away"]["name"]
         league = f["league"]["name"]
+        match_id = f["fixture"]["id"]
+        match_date = f["fixture"]["date"]
 
-        h_last = get_team_last_matches(h["id"])
-        a_last = get_team_last_matches(a["id"])
+        ai_text = deepseek_predict(home, away, league)
 
-        h_stats = compute_team_stats(h["id"], h_last)
-        a_stats = compute_team_stats(a["id"], a_last)
+        # DB'ye kaydet
+        save_prediction(match_id, home, away, league, match_date, ai_text)
 
-        h2h = get_h2h_matches(h["id"], a["id"])
-        h2h_text = format_h2h_stats(h["name"], a["name"], h2h)
+        messages.append(format_match_card(f, ai_text))
 
-        ai = deepseek_predict(h, a, league, h_stats, a_stats, h2h_text)
-        cards.append(format_match_card(f, ai))
-
-    final_msg = (
-        "🔥 *GÜNÜN VIP MAÇ TAHMİNLERİ* 🔥\n"
-        "_(Bilgi amaçlıdır)_\n\n" +
-        "\n".join(cards)
-    )
-
+    final_msg = "🔥 *GÜNÜN VIP MAÇ TAHMİNLERİ* 🔥\n\n" + "\n".join(messages)
     send_telegram_message(final_msg)
-    return {"ok": True, "count": len(cards)}
+
+    return {"ok": True}
 
 
-# ------------------ FLASK ------------------ #
+# -------------------------------------------------------------
+#               MAÇ SONUCU KONTROLÜ (CRON → /check_results)
+# -------------------------------------------------------------
+
+def check_results():
+    conn = get_db()
+    if not conn:
+        return {"ok": False}
+
+    cur = conn.cursor()
+
+    # Daha sonucu kaydedilmemiş tahminler
+    cur.execute("SELECT * FROM predictions WHERE result IS NULL")
+    rows = cur.fetchall()
+
+    for row in rows:
+        match_id = row["match_id"]
+
+        url = f"{API_BASE_URL}/fixtures?id={match_id}"
+        r = requests.get(url, headers=HEADERS).json()
+        data = r.get("response", [])
+
+        if not data:
+            continue
+
+        fx = data[0]
+        status = fx["fixture"]["status"]["short"]
+
+        if status != "FT":
+            continue  # maç bitmemiş
+
+        gh = fx["goals"]["home"]
+        ga = fx["goals"]["away"]
+
+        ai = row["ai_prediction"]
+
+        # Basit başarı kontrolü
+        correct = None
+        if "Ev Kazanır" in ai and gh > ga:
+            correct = True
+        elif "Deplasman Kazanır" in ai and ga > gh:
+            correct = True
+        elif "Beraberlik" in ai and gh == ga:
+            correct = True
+        else:
+            correct = False
+
+        cur.execute("""
+            UPDATE predictions
+            SET result=%s, is_correct=%s
+            WHERE id=%s
+        """, (f"{gh}-{ga}", correct, row["id"]))
+
+    conn.commit()
+    close_db(conn)
+
+    return {"ok": True}
+
+
+# -------------------------------------------------------------
+#           GÜNLÜK ÖZET RAPORU (CRON → /daily_report)
+# -------------------------------------------------------------
+
+def daily_report():
+    conn = get_db()
+    if not conn:
+        return {"ok": False}
+
+    cur = conn.cursor()
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    cur.execute("""
+        SELECT * FROM predictions
+        WHERE DATE(match_date) = DATE(%s)
+        AND result IS NOT NULL
+    """, (today,))
+
+    rows = cur.fetchall()
+
+    if not rows:
+        send_telegram_message("📊 Bugün oynanan maç yok.")
+        return {"ok": False}
+
+    total = len(rows)
+    correct = len([r for r in rows if r["is_correct"]])
+
+    msg = f"🏆 *Günlük Başarı Raporu*\n✓ {correct} maç tuttu\n✗ {total - correct} maç tutmadı\nBaşarı: %{round((correct / total) * 100)}\n\n"
+
+    for r in rows:
+        status = "Tuttu" if r["is_correct"] else "Tutmadı"
+        msg += f"- {r['home_team']} – {r['away_team']} → {status}\n"
+
+    send_telegram_message(msg)
+    return {"ok": True}
+
+
+# -------------------------------------------------------------
+#                       FLASK SERVER
+# -------------------------------------------------------------
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Sistem çalışıyor /run"
+    return "OK – Match Prediction System is running."
 
 @app.route("/run")
 def run_endpoint():
     return jsonify(run_daily_job())
+
+@app.route("/check_results")
+def check_endpoint():
+    return jsonify(check_results())
+
+@app.route("/daily_report")
+def report_endpoint():
+    return jsonify(daily_report())
 
 
 if __name__ == "__main__":
