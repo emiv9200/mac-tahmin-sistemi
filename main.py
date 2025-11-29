@@ -13,21 +13,18 @@ from database import (
 )
 from data_collector import collect_today_matches
 
-# ========================================
-# ENVIRONMENT VARIABLES
-# ========================================
+# Environment Variables
 API_KEY = os.getenv("API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Validation
 if not all([API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DEEPSEEK_API_KEY]):
-    print("⚠️ UYARI: Bazı environment variable'lar eksik!")
-    print(f"   API_KEY: {'✓' if API_KEY else '✗'}")
-    print(f"   TELEGRAM_BOT_TOKEN: {'✓' if TELEGRAM_BOT_TOKEN else '✗'}")
-    print(f"   TELEGRAM_CHAT_ID: {'✓' if TELEGRAM_CHAT_ID else '✗'}")
-    print(f"   DEEPSEEK_API_KEY: {'✓' if DEEPSEEK_API_KEY else '✗'}")
+    print("WARNING: Some environment variables are missing!")
+    print(f"   API_KEY: {'OK' if API_KEY else 'MISSING'}")
+    print(f"   TELEGRAM_BOT_TOKEN: {'OK' if TELEGRAM_BOT_TOKEN else 'MISSING'}")
+    print(f"   TELEGRAM_CHAT_ID: {'OK' if TELEGRAM_CHAT_ID else 'MISSING'}")
+    print(f"   DEEPSEEK_API_KEY: {'OK' if DEEPSEEK_API_KEY else 'MISSING'}")
 
 API_BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {
@@ -35,34 +32,19 @@ HEADERS = {
     "x-rapidapi-host": "v3.football.api-sports.io"
 }
 
-# Target leagues
 TARGET_LEAGUES = [
     39,   # Premier League
     78,   # Bundesliga
     140,  # La Liga
     61,   # Ligue 1
     135,  # Serie A
-    203,  # Süper Lig
+    203,  # Super Lig
 ]
 
-# ========================================
-# TELEGRAM FUNCTIONS
-# ========================================
-
 def send_telegram_message(text: str, parse_mode="Markdown", disable_preview=True):
-    """
-    Telegram'a mesaj gönderir.
-    
-    Args:
-        text: Mesaj metni
-        parse_mode: "Markdown" veya "HTML"
-        disable_preview: Link önizlemesini kapat
-    
-    Returns:
-        bool: Başarılı ise True
-    """
+    """Send message to Telegram"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram bilgileri eksik!")
+        print("Telegram credentials missing!")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -78,11 +60,11 @@ def send_telegram_message(text: str, parse_mode="Markdown", disable_preview=True
         response.raise_for_status()
         return True
     except requests.exceptions.RequestException as e:
-        print(f"❌ Telegram gönderim hatası: {e}")
+        print(f"Telegram error: {e}")
         return False
 
 def log_telegram_message(match_id, message_text, success, error_message=None):
-    """Telegram mesaj logunu veritabanına kaydeder"""
+    """Log Telegram message to database"""
     try:
         with get_db_cursor() as cur:
             cur.execute("""
@@ -91,78 +73,49 @@ def log_telegram_message(match_id, message_text, success, error_message=None):
                 ) VALUES (%s, %s, %s, %s, %s)
             """, (match_id, message_text, TELEGRAM_CHAT_ID, success, error_message))
     except Exception as e:
-        print(f"⚠️ Log kaydetme hatası: {e}")
-
-# ========================================
-# DEEPSEEK AI PREDICTION
-# ========================================
+        print(f"Log error: {e}")
 
 def deepseek_predict(match_data):
-    """
-    DeepSeek API ile gelişmiş maç tahmini yapar.
-    
-    Args:
-        match_data: Dictionary içinde maç bilgileri
-    
-    Returns:
-        dict: {
-            'prediction': str,
-            'confidence': float,
-            'reasoning': str,
-            'recommended_bet': str,
-            'risk_level': str
-        }
-    """
+    """Get AI prediction from DeepSeek"""
     if not DEEPSEEK_API_KEY:
         return {
-            'prediction': 'API KEY yok',
+            'prediction': 'NO_API_KEY',
             'confidence': 0,
-            'reasoning': 'DeepSeek API KEY tanımlanmamış',
+            'reasoning': 'DeepSeek API key not configured',
             'recommended_bet': 'SKIP',
-            'risk_level': 'HIGH'
+            'risk_level': 'HIGH',
+            'expected_value': 0
         }
 
-    # Prompt oluştur
-    prompt = f"""
-Sen profesyonel bir futbol analisti ve bahis uzmanısın. Aşağıdaki maç için detaylı analiz yap:
+    prompt = f"""You are a professional football analyst. Analyze this match:
 
-📊 MAÇ BİLGİLERİ:
-- Ev Sahibi: {match_data['home_team']}
-- Deplasman: {match_data['away_team']}
-- Lig: {match_data['league']}
-- Tarih: {match_data['match_date']}
+MATCH INFO:
+Home: {match_data['home_team']}
+Away: {match_data['away_team']}
+League: {match_data['league']}
 
-📈 ODDS (Bahis Oranları):
-- Ev Kazanır: {match_data.get('home_odds', 'N/A')}
-- Beraberlik: {match_data.get('draw_odds', 'N/A')}
-- Deplasman Kazanır: {match_data.get('away_odds', 'N/A')}
-- Üst 2.5 Gol: {match_data.get('over_2_5_odds', 'N/A')}
-- Alt 2.5 Gol: {match_data.get('under_2_5_odds', 'N/A')}
-- BTTS Yes: {match_data.get('btts_yes_odds', 'N/A')}
+ODDS:
+Home Win: {match_data.get('home_odds', 'N/A')}
+Draw: {match_data.get('draw_odds', 'N/A')}
+Away Win: {match_data.get('away_odds', 'N/A')}
+Over 2.5: {match_data.get('over_2_5_odds', 'N/A')}
+Under 2.5: {match_data.get('under_2_5_odds', 'N/A')}
 
-📊 İSTATİSTİKLER:
-- Ev Sahibi Formu: {match_data.get('home_form', 'N/A')}
-- Deplasman Formu: {match_data.get('away_form', 'N/A')}
-- Ev Sahibi Ortalama Gol: {match_data.get('home_goals_avg', 'N/A')}
-- Deplasman Ortalama Gol: {match_data.get('away_goals_avg', 'N/A')}
+STATS:
+Home Form: {match_data.get('home_form', 'N/A')}
+Away Form: {match_data.get('away_form', 'N/A')}
+Home Avg Goals: {match_data.get('home_goals_avg', 'N/A')}
+Away Avg Goals: {match_data.get('away_goals_avg', 'N/A')}
 
-GÖREV: Aşağıdaki formatta SADECE JSON yanıt ver, başka hiçbir metin ekleme:
-
+Return ONLY valid JSON:
 {{
-  "prediction": "HOME_WIN | DRAW | AWAY_WIN | OVER_2.5 | UNDER_2.5 | BTTS_YES",
+  "prediction": "HOME_WIN or DRAW or AWAY_WIN or OVER_2.5 or UNDER_2.5 or BTTS_YES",
   "confidence": 75,
-  "reasoning": "Kısa analiz açıklaması (max 150 karakter)",
-  "recommended_bet": "Hangi bahsi öneriyorsun (örn: 'Ev Kazanır @2.10')",
-  "risk_level": "LOW | MEDIUM | HIGH",
+  "reasoning": "Brief analysis (max 150 chars)",
+  "recommended_bet": "Recommended bet with odds",
+  "risk_level": "LOW or MEDIUM or HIGH",
   "expected_value": 1.15
 }}
-
-KURALLAR:
-1. Confidence: 0-100 arası sayı
-2. Risk Level: Sadece LOW, MEDIUM veya HIGH
-3. Expected Value: (Odds * Win Probability) - 1
-4. Reasoning: Maksimum 150 karakter
-5. SADECE JSON yanıt ver, başka açıklama ekleme
 """
 
     try:
@@ -175,7 +128,7 @@ KURALLAR:
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,  # Daha tutarlı sonuçlar için
+                "temperature": 0.3,
                 "max_tokens": 500
             },
             timeout=30
@@ -184,11 +137,8 @@ KURALLAR:
         response.raise_for_status()
         result = response.json()
         
-        # JSON parse et
         import json
         ai_response = result["choices"][0]["message"]["content"]
-        
-        # Markdown code block'larını temizle
         ai_response = ai_response.replace('```json', '').replace('```', '').strip()
         
         prediction_data = json.loads(ai_response)
@@ -196,25 +146,24 @@ KURALLAR:
         return {
             'prediction': prediction_data.get('prediction', 'UNKNOWN'),
             'confidence': float(prediction_data.get('confidence', 0)),
-            'reasoning': prediction_data.get('reasoning', 'Analiz yapılamadı'),
+            'reasoning': prediction_data.get('reasoning', 'No analysis available'),
             'recommended_bet': prediction_data.get('recommended_bet', 'SKIP'),
             'risk_level': prediction_data.get('risk_level', 'HIGH'),
             'expected_value': float(prediction_data.get('expected_value', 0))
         }
         
     except json.JSONDecodeError as e:
-        print(f"❌ DeepSeek JSON parse hatası: {e}")
-        print(f"   Raw response: {ai_response[:200]}")
+        print(f"JSON parse error: {e}")
         return {
             'prediction': 'PARSE_ERROR',
             'confidence': 0,
-            'reasoning': 'AI yanıtı parse edilemedi',
+            'reasoning': 'Failed to parse AI response',
             'recommended_bet': 'SKIP',
             'risk_level': 'HIGH',
             'expected_value': 0
         }
     except Exception as e:
-        print(f"❌ DeepSeek API hatası: {e}")
+        print(f"DeepSeek API error: {e}")
         return {
             'prediction': 'ERROR',
             'confidence': 0,
@@ -224,15 +173,9 @@ KURALLAR:
             'expected_value': 0
         }
 
-# ========================================
-# AI ANALYSIS & UPDATE
-# ========================================
-
 def analyze_and_update_predictions():
-    """
-    Veritabanındaki AI prediction'ı olmayan maçları analiz eder.
-    """
-    print("\n🤖 DeepSeek analizi başlatılıyor...\n")
+    """Analyze matches with DeepSeek AI"""
+    print("\nStarting DeepSeek analysis...\n")
     
     query = """
         SELECT 
@@ -253,18 +196,16 @@ def analyze_and_update_predictions():
     matches = execute_query(query)
     
     if not matches:
-        print("✓ Analiz edilecek maç yok")
+        print("No matches to analyze")
         return 0
     
     analyzed_count = 0
     
     for match in matches:
-        print(f"  📊 Analiz ediliyor: {match['home_team']} vs {match['away_team']}")
+        print(f"  Analyzing: {match['home_team']} vs {match['away_team']}")
         
-        # DeepSeek'ten tahmin al
         ai_result = deepseek_predict(match)
         
-        # Veritabanını güncelle
         try:
             with get_db_cursor() as cur:
                 cur.execute("""
@@ -287,71 +228,51 @@ def analyze_and_update_predictions():
                     match['match_id']
                 ))
             
-            print(f"    ✅ Tahmin: {ai_result['prediction']} (Güven: %{ai_result['confidence']})")
+            print(f"    OK: {ai_result['prediction']} (Confidence: {ai_result['confidence']}%)")
             analyzed_count += 1
-            
-            # Rate limiting
             time.sleep(2)
             
         except Exception as e:
-            print(f"    ❌ Güncelleme hatası: {e}")
+            print(f"    ERROR: {e}")
     
-    print(f"\n✅ Toplam {analyzed_count} maç analiz edildi!\n")
+    print(f"\nAnalyzed {analyzed_count} matches!\n")
     return analyzed_count
 
-# ========================================
-# TELEGRAM MESSAGE FORMATTING
-# ========================================
-
 def format_prediction_message(match):
-    """Maç tahmin kartını formatlar"""
-    
-    # Risk emoji
+    """Format prediction message for Telegram"""
     risk_emoji = {
         'LOW': '🟢',
         'MEDIUM': '🟡',
         'HIGH': '🔴'
     }.get(match.get('risk_level', 'HIGH'), '⚪')
     
-    # Tarih formatı
     match_time = match['match_date'].strftime('%H:%M') if isinstance(match['match_date'], datetime) else str(match['match_date'])[11:16]
     
     message = f"""
-━━━━━━━━━━━━━━━━━━━━━━
-⚽ *{match['home_team']}* vs *{match['away_team']}*
-🏆 {match['league']}
-🕐 Saat: {match_time}
+{'='*40}
+{match['home_team']} vs {match['away_team']}
+{match['league']}
+Time: {match_time}
 
-📊 *ODDS*
-├ Ev: {match.get('home_odds', 'N/A')}
-├ Beraberlik: {match.get('draw_odds', 'N/A')}
-└ Deplasman: {match.get('away_odds', 'N/A')}
+ODDS
+Home: {match.get('home_odds', 'N/A')}
+Draw: {match.get('draw_odds', 'N/A')}
+Away: {match.get('away_odds', 'N/A')}
 
-🤖 *AI TAHMİNİ*
-{risk_emoji} *{match.get('recommended_bet', 'SKIP')}*
+AI PREDICTION
+{risk_emoji} {match.get('recommended_bet', 'SKIP')}
 
-📈 Güven: %{match.get('ai_confidence', 0):.0f}
-💡 Analiz: _{match.get('ai_reasoning', 'Analiz yok')}_
-⚡ Risk: {match.get('risk_level', 'HIGH')}
-━━━━━━━━━━━━━━━━━━━━━━
+Confidence: {match.get('ai_confidence', 0):.0f}%
+Analysis: {match.get('ai_reasoning', 'No analysis')}
+Risk: {match.get('risk_level', 'HIGH')}
+{'='*40}
 """
     return message.strip()
 
-# ========================================
-# SEND PREDICTIONS TO TELEGRAM
-# ========================================
-
 def send_daily_predictions(min_confidence=60, max_risk='MEDIUM'):
-    """
-    Günlük tahminleri Telegram'a gönderir.
+    """Send predictions to Telegram"""
+    print("\nSending predictions to Telegram...\n")
     
-    Args:
-        min_confidence: Minimum güven skoru
-        max_risk: Maximum risk seviyesi (LOW, MEDIUM, HIGH)
-    """
-    print("\n📤 Telegram'a tahminler gönderiliyor...\n")
-    
-    # Risk seviyesi mapping
     risk_levels = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3}
     max_risk_value = risk_levels.get(max_risk, 2)
     
@@ -374,26 +295,24 @@ def send_daily_predictions(min_confidence=60, max_risk='MEDIUM'):
     matches = execute_query(query, params=(min_confidence,))
     
     if not matches:
-        print("  ℹ️ Gönderilecek tahmin yok")
+        print("  No predictions to send")
         return 0
     
-    # Risk filtreleme
     filtered_matches = [
         m for m in matches 
         if risk_levels.get(m.get('risk_level', 'HIGH'), 3) <= max_risk_value
     ]
     
     if not filtered_matches:
-        print(f"  ℹ️ {max_risk} risk seviyesinde tahmin yok")
+        print(f"  No predictions matching risk level: {max_risk}")
         return 0
     
-    # Header mesajı
     header = f"""
-🔥 *BUGÜNÜN VIP TAHMİNLERİ* 🔥
-📅 {datetime.now().strftime('%d.%m.%Y')}
-🎯 Toplam {len(filtered_matches)} maç
+DAILY VIP PREDICTIONS
+Date: {datetime.now().strftime('%d.%m.%Y')}
+Total: {len(filtered_matches)} matches
 
-_Min Güven: %{min_confidence} | Max Risk: {max_risk}_
+Min Confidence: {min_confidence}% | Max Risk: {max_risk}
 """
     
     send_telegram_message(header)
@@ -405,7 +324,6 @@ _Min Güven: %{min_confidence} | Max Risk: {max_risk}_
         message = format_prediction_message(match)
         success = send_telegram_message(message)
         
-        # Log kaydet
         log_telegram_message(
             match['match_id'],
             message,
@@ -414,36 +332,28 @@ _Min Güven: %{min_confidence} | Max Risk: {max_risk}_
         )
         
         if success:
-            # Telegram durumunu güncelle
             mark_telegram_sent(match['match_id'], TELEGRAM_CHAT_ID)
             sent_count += 1
-            print(f"  ✅ {match['home_team']} vs {match['away_team']}")
+            print(f"  OK: {match['home_team']} vs {match['away_team']}")
         else:
-            print(f"  ❌ {match['home_team']} vs {match['away_team']}")
+            print(f"  FAIL: {match['home_team']} vs {match['away_team']}")
         
-        time.sleep(2)  # Telegram rate limit
+        time.sleep(2)
     
-    # Footer
     footer = f"""
-━━━━━━━━━━━━━━━━━━━━━━
-✅ {sent_count} tahmin gönderildi
-🤖 *Powered by DeepSeek AI*
-━━━━━━━━━━━━━━━━━━━━━━
+{'='*40}
+Sent: {sent_count} predictions
+Powered by DeepSeek AI
+{'='*40}
 """
     send_telegram_message(footer)
     
-    print(f"\n✅ Toplam {sent_count} tahmin gönderildi!\n")
+    print(f"\nSent {sent_count} predictions!\n")
     return sent_count
 
-# ========================================
-# RESULT CHECKING & UPDATE
-# ========================================
-
 def check_and_update_results():
-    """
-    Biten maçların sonuçlarını kontrol eder ve veritabanını günceller.
-    """
-    print("\n🔍 Maç sonuçları kontrol ediliyor...\n")
+    """Check match results and update database"""
+    print("\nChecking match results...\n")
     
     query = """
         SELECT * FROM predictions
@@ -456,7 +366,7 @@ def check_and_update_results():
     matches = execute_query(query)
     
     if not matches:
-        print("  ℹ️ Kontrol edilecek maç yok")
+        print("  No matches to check")
         return 0
     
     updated_count = 0
@@ -477,20 +387,50 @@ def check_and_update_results():
             fixture = data[0]
             status = fixture["fixture"]["status"]["short"]
             
-            # Sadece bitmiş maçları işle
             if status != "FT":
                 continue
             
             home_score = fixture["goals"]["home"]
             away_score = fixture["goals"]["away"]
             
-            # Tahmin doğruluğunu kontrol et
-            is_correct = check_prediction_accuracy(match, home_score, away_score)
+            prediction = match.get('ai_prediction', '')
+            is_correct = False
             
-            # Kar/zarar hesapla (örnek: 10 birim bahis)
-            profit_loss = calculate_profit_loss(match, is_correct)
+            if 'HOME_WIN' in prediction and home_score > away_score:
+                is_correct = True
+            elif 'AWAY_WIN' in prediction and away_score > home_score:
+                is_correct = True
+            elif 'DRAW' in prediction and home_score == away_score:
+                is_correct = True
+            elif 'OVER_2.5' in prediction and (home_score + away_score) > 2.5:
+                is_correct = True
+            elif 'UNDER_2.5' in prediction and (home_score + away_score) < 2.5:
+                is_correct = True
+            elif 'BTTS_YES' in prediction and home_score > 0 and away_score > 0:
+                is_correct = True
             
-            # Veritabanını güncelle
+            stake = 10
+            profit_loss = -stake
+            
+            if is_correct:
+                if 'HOME_WIN' in prediction:
+                    odds = match.get('home_odds', 0)
+                elif 'AWAY_WIN' in prediction:
+                    odds = match.get('away_odds', 0)
+                elif 'DRAW' in prediction:
+                    odds = match.get('draw_odds', 0)
+                elif 'OVER_2.5' in prediction:
+                    odds = match.get('over_2_5_odds', 0)
+                elif 'UNDER_2.5' in prediction:
+                    odds = match.get('under_2_5_odds', 0)
+                elif 'BTTS_YES' in prediction:
+                    odds = match.get('btts_yes_odds', 0)
+                else:
+                    odds = 0
+                
+                if odds > 0:
+                    profit_loss = round((stake * odds) - stake, 2)
+            
             with get_db_cursor() as cur:
                 cur.execute("""
                     UPDATE predictions
@@ -510,77 +450,26 @@ def check_and_update_results():
                     match_id
                 ))
             
-            status_icon = "✅" if is_correct else "❌"
-            print(f"  {status_icon} {match['home_team']} {home_score}-{away_score} {match['away_team']}")
+            status_icon = "OK" if is_correct else "FAIL"
+            print(f"  {status_icon}: {match['home_team']} {home_score}-{away_score} {match['away_team']}")
             updated_count += 1
             
-            time.sleep(1)  # API rate limit
+            time.sleep(1)
             
         except Exception as e:
-            print(f"  ⚠️ {match['home_team']} - Hata: {e}")
+            print(f"  ERROR: {match['home_team']} - {e}")
     
-    print(f"\n✅ {updated_count} maç sonucu güncellendi!\n")
+    print(f"\nUpdated {updated_count} results!\n")
     return updated_count
 
-def check_prediction_accuracy(match, home_score, away_score):
-    """Tahmin doğruluğunu kontrol eder"""
-    prediction = match.get('ai_prediction', '')
-    
-    if 'HOME_WIN' in prediction and home_score > away_score:
-        return True
-    elif 'AWAY_WIN' in prediction and away_score > home_score:
-        return True
-    elif 'DRAW' in prediction and home_score == away_score:
-        return True
-    elif 'OVER_2.5' in prediction and (home_score + away_score) > 2.5:
-        return True
-    elif 'UNDER_2.5' in prediction and (home_score + away_score) < 2.5:
-        return True
-    elif 'BTTS_YES' in prediction and home_score > 0 and away_score > 0:
-        return True
-    
-    return False
-
-def calculate_profit_loss(match, is_correct, stake=10):
-    """Kar/zarar hesaplar"""
-    if not is_correct:
-        return -stake
-    
-    prediction = match.get('ai_prediction', '')
-    
-    # İlgili odds'u bul
-    if 'HOME_WIN' in prediction:
-        odds = match.get('home_odds', 0)
-    elif 'AWAY_WIN' in prediction:
-        odds = match.get('away_odds', 0)
-    elif 'DRAW' in prediction:
-        odds = match.get('draw_odds', 0)
-    elif 'OVER_2.5' in prediction:
-        odds = match.get('over_2_5_odds', 0)
-    elif 'UNDER_2.5' in prediction:
-        odds = match.get('under_2_5_odds', 0)
-    elif 'BTTS_YES' in prediction:
-        odds = match.get('btts_yes_odds', 0)
-    else:
-        odds = 0
-    
-    if odds == 0:
-        return 0
-    
-    return round((stake * odds) - stake, 2)
-
-# ========================================
-# DAILY REPORT
-# ========================================
-
 def send_daily_report():
-    """Günlük performans raporunu gönderir"""
-    print("\n📊 Günlük rapor hazırlanıyor...\n")
+    """Send daily performance report"""
+    print("\nGenerating daily report...\n")
     
     stats = get_performance_stats(days=1)
     
     if not stats or stats['total_predictions'] == 0:
-        send_telegram_message("📊 Bugün değerlendirilmiş tahmin yok.")
+        send_telegram_message("No predictions to report today.")
         return
     
     total = stats['total_predictions']
@@ -589,53 +478,48 @@ def send_daily_report():
     profit = stats['total_profit_loss'] or 0
     
     report = f"""
-📊 *GÜNLÜK PERFORMANS RAPORU*
-📅 {datetime.now().strftime('%d.%m.%Y')}
+DAILY PERFORMANCE REPORT
+Date: {datetime.now().strftime('%d.%m.%Y')}
 
-━━━━━━━━━━━━━━━━━━━━━━
-📈 *İSTATİSTİKLER*
-├ Toplam Tahmin: {total}
-├ Doğru: {correct} ✅
-├ Yanlış: {total - correct} ❌
-└ Başarı Oranı: %{accuracy:.1f}
+{'='*40}
+STATISTICS
+Total Predictions: {total}
+Correct: {correct}
+Wrong: {total - correct}
+Accuracy: {accuracy:.1f}%
 
-💰 *FİNANSAL*
-└ Kar/Zarar: {profit:+.2f} TL
+FINANCIAL
+Profit/Loss: {profit:+.2f} TL
 
-⭐ Ortalama Güven: %{stats.get('avg_confidence', 0):.1f}
-━━━━━━━━━━━━━━━━━━━━━━
+Average Confidence: {stats.get('avg_confidence', 0):.1f}%
+{'='*40}
 """
     
     send_telegram_message(report)
-    print("✅ Günlük rapor gönderildi!")
+    print("Daily report sent!")
 
-# ========================================
-# FLASK WEB SERVER
-# ========================================
-
+# Flask App
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    """Ana sayfa"""
     return jsonify({
         "status": "running",
         "service": "Football Match Prediction System",
         "version": "2.0",
         "endpoints": {
-            "/collect": "Bugünkü maçları topla",
-            "/analyze": "DeepSeek ile analiz yap",
-            "/send": "Tahminleri Telegram'a gönder",
-            "/check": "Sonuçları kontrol et",
-            "/report": "Günlük rapor gönder",
-            "/run": "Tam döngü (collect + analyze + send)",
-            "/stats": "Performans istatistikleri"
+            "/collect": "Collect today's matches",
+            "/analyze": "Analyze with DeepSeek AI",
+            "/send": "Send predictions to Telegram",
+            "/check": "Check match results",
+            "/report": "Send daily report",
+            "/run": "Full cycle (collect + analyze + send)",
+            "/stats": "Performance statistics"
         }
     })
 
 @app.route("/collect")
 def collect_endpoint():
-    """Bugünkü maçları topla"""
     try:
         count = collect_today_matches(TARGET_LEAGUES)
         return jsonify({"success": True, "collected": count})
@@ -644,7 +528,6 @@ def collect_endpoint():
 
 @app.route("/analyze")
 def analyze_endpoint():
-    """DeepSeek ile analiz yap"""
     try:
         count = analyze_and_update_predictions()
         return jsonify({"success": True, "analyzed": count})
@@ -653,7 +536,6 @@ def analyze_endpoint():
 
 @app.route("/send")
 def send_endpoint():
-    """Tahminleri Telegram'a gönder"""
     try:
         min_confidence = int(request.args.get('min_confidence', 60))
         max_risk = request.args.get('max_risk', 'MEDIUM')
@@ -665,7 +547,6 @@ def send_endpoint():
 
 @app.route("/check")
 def check_endpoint():
-    """Sonuçları kontrol et"""
     try:
         count = check_and_update_results()
         return jsonify({"success": True, "updated": count})
@@ -674,7 +555,6 @@ def check_endpoint():
 
 @app.route("/report")
 def report_endpoint():
-    """Günlük rapor gönder"""
     try:
         send_daily_report()
         return jsonify({"success": True})
@@ -683,20 +563,16 @@ def report_endpoint():
 
 @app.route("/run")
 def run_endpoint():
-    """Tam döngü: Collect → Analyze → Send"""
     try:
         results = {}
         
-        # 1. Maçları topla
-        print("1️⃣ Maç toplama...")
+        print("Step 1: Collecting matches...")
         results['collected'] = collect_today_matches(TARGET_LEAGUES)
         
-        # 2. Analiz yap
-        print("2️⃣ AI Analizi...")
+        print("Step 2: AI Analysis...")
         results['analyzed'] = analyze_and_update_predictions()
         
-        # 3. Telegram'a gönder
-        print("3️⃣ Telegram gönderimi...")
+        print("Step 3: Sending to Telegram...")
         results['sent'] = send_daily_predictions(min_confidence=65, max_risk='MEDIUM')
         
         return jsonify({"success": True, **results})
@@ -705,7 +581,6 @@ def run_endpoint():
 
 @app.route("/stats")
 def stats_endpoint():
-    """Performans istatistikleri"""
     try:
         days = int(request.args.get('days', 30))
         stats = get_performance_stats(days)
@@ -713,62 +588,16 @@ def stats_endpoint():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# ========================================
-# MAIN
-# ========================================
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     
     print("\n" + "="*60)
-    print("🚀 FOOTBALL PREDICTION SYSTEM v2.0")
+    print("FOOTBALL PREDICTION SYSTEM v2.0")
     print("="*60)
-    print(f"🌐 Server başlatılıyor: http://0.0.0.0:{port}")
-    print(f"📊 Target Leagues: {len(TARGET_LEAGUES)} lig")
-    print(f"🤖 DeepSeek AI: {'✓' if DEEPSEEK_API_KEY else '✗'}")
-    print(f"📱 Telegram: {'✓' if TELEGRAM_BOT_TOKEN else '✗'}")
+    print(f"Server: http://0.0.0.0:{port}")
+    print(f"Target Leagues: {len(TARGET_LEAGUES)}")
+    print(f"DeepSeek AI: {'OK' if DEEPSEEK_API_KEY else 'NOT CONFIGURED'}")
+    print(f"Telegram: {'OK' if TELEGRAM_BOT_TOKEN else 'NOT CONFIGURED'}")
     print("="*60 + "\n")
     
     app.run(host="0.0.0.0", port=port, debug=False)
-```
-
----
-
-## 🎯 MAJOR IMPROVEMENTS
-
-### ✅ Tamamen Yeniden Yazıldı
-
-1. **DeepSeek Entegrasyonu** 🤖
-   - JSON formatında yapılandırılmış yanıt
-   - Confidence, risk level, expected value hesaplama
-   - Error handling ve retry logic
-
-2. **Gelişmiş Telegram Mesajları** 📱
-   - Güzel formatlanmış kartlar
-   - Risk emoji'leri (🟢🟡🔴)
-   - Detaylı analiz bilgileri
-
-3. **Akıllı Filtreleme** 🎯
-   - Min confidence threshold
-   - Max risk level filtering
-   - Expected value calculation
-
-4. **Otomatik Sonuç Kontrolü** ✅
-   - Maç sonuçlarını API'den çek
-   - Tahmin doğruluğunu hesapla
-   - Kar/zarar tracking
-
-5. **Modüler Yapı** 🏗️
-   - Her fonksiyon tek bir iş yapar
-   - Yeniden kullanılabilir kod
-   - Kolay test edilebilir
-
-6. **Flask Endpoint'leri** 🌐
-```
-   /collect  → Maç toplama
-   /analyze  → AI analizi
-   /send     → Telegram gönderimi
-   /check    → Sonuç kontrolü
-   /report   → Günlük rapor
-   /run      → Tam döngü
-   /stats    → İstatistikler
