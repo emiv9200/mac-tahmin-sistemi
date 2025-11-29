@@ -1,5 +1,17 @@
-flask
-requests
-python-dotenv
-pytz
-psycopg2-binary
+# Web Framework
+Flask==3.0.3
+
+# HTTP İstekleri
+requests==2.31.0
+
+# Environment Variables
+python-dotenv==1.0.1
+
+# Timezone İşlemleri
+pytz==2024.1
+
+# PostgreSQL Driver
+psycopg2-binary==2.9.9
+
+# OPTIONAL: Performans ve Monitoring (Önerilen)
+gunicorn==21.2.0
