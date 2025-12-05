@@ -32,13 +32,31 @@ HEADERS = {
     "x-rapidapi-host": "v3.football.api-sports.io"
 }
 
+# EXPANDED TARGET LEAGUES - More matches for testing!
 TARGET_LEAGUES = [
-    39,   # Premier League
-    78,   # Bundesliga
-    140,  # La Liga
-    61,   # Ligue 1
-    135,  # Serie A
-    203,  # Super Lig
+    # Top 5 European
+    39,   # Premier League (England)
+    140,  # La Liga (Spain)
+    135,  # Serie A (Italy)
+    78,   # Bundesliga (Germany)
+    61,   # Ligue 1 (France)
+    
+    # Turkish
+    203,  # Super Lig (Turkey)
+    
+    # Championship & Second Tiers
+    40,   # Championship (England 2nd)
+    141,  # La Liga 2 (Spain 2nd)
+    136,  # Serie B (Italy 2nd)
+    
+    # Other Major Leagues
+    94,   # Primeira Liga (Portugal)
+    88,   # Eredivisie (Netherlands)
+    144,  # Belgian Pro League (Belgium)
+    
+    # South America
+    71,   # Serie A (Brazil)
+    128,  # Primera Division (Argentina)
 ]
 
 # FIXED STAKE AMOUNT
@@ -565,6 +583,7 @@ def home():
         "service": "Football Match Prediction System",
         "version": "2.0",
         "stake_amount": STAKE_AMOUNT,
+        "target_leagues": len(TARGET_LEAGUES),
         "endpoints": {
             "/setup": "Create database tables (run once)",
             "/collect": "Collect today's matches",
