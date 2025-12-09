@@ -1,6 +1,7 @@
 import os
 import requests
 import time
+import json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 from database import (
@@ -20,11 +21,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 if not all([API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DEEPSEEK_API_KEY]):
-    print("WARNING: Some environment variables are missing!")
-    print(f"   API_KEY: {'OK' if API_KEY else 'MISSING'}")
-    print(f"   TELEGRAM_BOT_TOKEN: {'OK' if TELEGRAM_BOT_TOKEN else 'MISSING'}")
-    print(f"   TELEGRAM_CHAT_ID: {'OK' if TELEGRAM_CHAT_ID else 'MISSING'}")
-    print(f"   DEEPSEEK_API_KEY: {'OK' if DEEPSEEK_API_KEY else 'MISSING'}")
+    print("⚠️  WARNING: Some environment variables are missing!")
+    print(f"   API_KEY: {'✅ OK' if API_KEY else '❌ MISSING'}")
+    print(f"   TELEGRAM_BOT_TOKEN: {'✅ OK' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
+    print(f"   TELEGRAM_CHAT_ID: {'✅ OK' if TELEGRAM_CHAT_ID else '❌ MISSING'}")
+    print(f"   DEEPSEEK_API_KEY: {'✅ OK' if DEEPSEEK_API_KEY else '❌ MISSING'}")
 
 API_BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {
@@ -32,29 +33,20 @@ HEADERS = {
     "x-rapidapi-host": "v3.football.api-sports.io"
 }
 
-# EXPANDED TARGET LEAGUES - More matches for testing!
+# EXPANDED TARGET LEAGUES
 TARGET_LEAGUES = [
-    # Top 5 European
     39,   # Premier League (England)
     140,  # La Liga (Spain)
     135,  # Serie A (Italy)
     78,   # Bundesliga (Germany)
     61,   # Ligue 1 (France)
-    
-    # Turkish
     203,  # Super Lig (Turkey)
-    
-    # Championship & Second Tiers
     40,   # Championship (England 2nd)
     141,  # La Liga 2 (Spain 2nd)
     136,  # Serie B (Italy 2nd)
-    
-    # Other Major Leagues
     94,   # Primeira Liga (Portugal)
     88,   # Eredivisie (Netherlands)
     144,  # Belgian Pro League (Belgium)
-    
-    # South America
     71,   # Serie A (Brazil)
     128,  # Primera Division (Argentina)
 ]
@@ -65,7 +57,7 @@ STAKE_AMOUNT = 50  # 50 TL fixed stake
 def send_telegram_message(text: str, parse_mode="Markdown", disable_preview=True):
     """Send message to Telegram"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials missing!")
+        print("❌ Telegram credentials missing!")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -81,7 +73,7 @@ def send_telegram_message(text: str, parse_mode="Markdown", disable_preview=True
         response.raise_for_status()
         return True
     except requests.exceptions.RequestException as e:
-        print(f"Telegram error: {e}")
+        print(f"❌ Telegram error: {e}")
         return False
 
 def log_telegram_message(match_id, message_text, success, error_message=None):
@@ -94,10 +86,40 @@ def log_telegram_message(match_id, message_text, success, error_message=None):
                 ) VALUES (%s, %s, %s, %s, %s)
             """, (match_id, message_text, TELEGRAM_CHAT_ID, success, error_message))
     except Exception as e:
-        print(f"Log error: {e}")
+        print(f"⚠️  Log error: {e}")
 
-def deepseek_predict(match_data):
-    """Get AI prediction from DeepSeek"""
+def validate_deepseek_response(data):
+    """Validate DeepSeek response structure"""
+    required_fields = ['prediction', 'confidence', 'reasoning', 'recommended_bet', 'risk_level', 'expected_value']
+    
+    if not isinstance(data, dict):
+        return False
+    
+    for field in required_fields:
+        if field not in data:
+            return False
+    
+    # Validate prediction type
+    valid_predictions = ['HOME_WIN', 'DRAW', 'AWAY_WIN', 'OVER_2.5', 'UNDER_2.5', 'BTTS_YES']
+    if data['prediction'] not in valid_predictions:
+        return False
+    
+    # Validate confidence range
+    try:
+        confidence = float(data['confidence'])
+        if not (0 <= confidence <= 100):
+            return False
+    except (ValueError, TypeError):
+        return False
+    
+    # Validate risk level
+    if data['risk_level'] not in ['LOW', 'MEDIUM', 'HIGH']:
+        return False
+    
+    return True
+
+def deepseek_predict(match_data, max_retries=3):
+    """Get AI prediction from DeepSeek with retry logic"""
     if not DEEPSEEK_API_KEY:
         return {
             'prediction': 'NO_API_KEY',
@@ -108,7 +130,7 @@ def deepseek_predict(match_data):
             'expected_value': 0
         }
 
-    prompt = f"""You are a professional football analyst. Analyze this match:
+    prompt = f"""You are a professional football analyst. Analyze this match and return ONLY valid JSON (no markdown, no extra text):
 
 MATCH INFO:
 Home: {match_data['home_team']}
@@ -128,75 +150,101 @@ Away Form: {match_data.get('away_form', 'N/A')}
 Home Avg Goals: {match_data.get('home_goals_avg', 'N/A')}
 Away Avg Goals: {match_data.get('away_goals_avg', 'N/A')}
 
-Return ONLY valid JSON:
+Return ONLY this exact JSON structure:
 {{
   "prediction": "HOME_WIN or DRAW or AWAY_WIN or OVER_2.5 or UNDER_2.5 or BTTS_YES",
   "confidence": 75,
-  "reasoning": "Brief analysis (max 150 chars)",
+  "reasoning": "Brief analysis max 150 chars",
   "recommended_bet": "Recommended bet with odds",
   "risk_level": "LOW or MEDIUM or HIGH",
   "expected_value": 1.15
-}}
-"""
+}}"""
 
-    try:
-        response = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": 500
-            },
-            timeout=30
-        )
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        import json
-        ai_response = result["choices"][0]["message"]["content"]
-        ai_response = ai_response.replace('```json', '').replace('```', '').strip()
-        
-        prediction_data = json.loads(ai_response)
-        
-        return {
-            'prediction': prediction_data.get('prediction', 'UNKNOWN'),
-            'confidence': float(prediction_data.get('confidence', 0)),
-            'reasoning': prediction_data.get('reasoning', 'No analysis available'),
-            'recommended_bet': prediction_data.get('recommended_bet', 'SKIP'),
-            'risk_level': prediction_data.get('risk_level', 'HIGH'),
-            'expected_value': float(prediction_data.get('expected_value', 0))
-        }
-        
-    except json.JSONDecodeError as e:
-        print(f"JSON parse error: {e}")
-        return {
-            'prediction': 'PARSE_ERROR',
-            'confidence': 0,
-            'reasoning': 'Failed to parse AI response',
-            'recommended_bet': 'SKIP',
-            'risk_level': 'HIGH',
-            'expected_value': 0
-        }
-    except Exception as e:
-        print(f"DeepSeek API error: {e}")
-        return {
-            'prediction': 'ERROR',
-            'confidence': 0,
-            'reasoning': str(e)[:150],
-            'recommended_bet': 'SKIP',
-            'risk_level': 'HIGH',
-            'expected_value': 0
-        }
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 500
+                },
+                timeout=30
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            ai_response = result["choices"][0]["message"]["content"]
+            
+            # Clean up response - remove markdown code blocks
+            ai_response = ai_response.strip()
+            if ai_response.startswith('```'):
+                ai_response = ai_response.split('\n', 1)[1]
+            if ai_response.endswith('```'):
+                ai_response = ai_response.rsplit('\n', 1)[0]
+            ai_response = ai_response.replace('```json', '').replace('```', '').strip()
+            
+            # Try to parse JSON
+            prediction_data = json.loads(ai_response)
+            
+            # Validate response structure
+            if not validate_deepseek_response(prediction_data):
+                raise ValueError("Invalid response structure")
+            
+            return {
+                'prediction': prediction_data.get('prediction', 'UNKNOWN'),
+                'confidence': float(prediction_data.get('confidence', 0)),
+                'reasoning': prediction_data.get('reasoning', 'No analysis available')[:150],
+                'recommended_bet': prediction_data.get('recommended_bet', 'SKIP'),
+                'risk_level': prediction_data.get('risk_level', 'HIGH'),
+                'expected_value': float(prediction_data.get('expected_value', 0))
+            }
+            
+        except json.JSONDecodeError as e:
+            print(f"⚠️  JSON parse error (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+                continue
+            return {
+                'prediction': 'PARSE_ERROR',
+                'confidence': 0,
+                'reasoning': f'Failed to parse AI response after {max_retries} attempts',
+                'recommended_bet': 'SKIP',
+                'risk_level': 'HIGH',
+                'expected_value': 0
+            }
+        except Exception as e:
+            print(f"⚠️  DeepSeek API error (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return {
+                'prediction': 'ERROR',
+                'confidence': 0,
+                'reasoning': str(e)[:150],
+                'recommended_bet': 'SKIP',
+                'risk_level': 'HIGH',
+                'expected_value': 0
+            }
 
 def analyze_and_update_predictions():
     """Analyze matches with DeepSeek AI"""
-    print("\nStarting DeepSeek analysis...\n")
+    print("\n" + "="*60)
+    print("🤖 DEEPSEEK AI ANALİZ BAŞLIYOR")
+    print("="*60 + "\n")
+    
+    # Check API key
+    if not DEEPSEEK_API_KEY:
+        print("❌ HATA: DEEPSEEK_API_KEY bulunamadı!")
+        return 0
+    
+    print(f"✅ DeepSeek API Key: {DEEPSEEK_API_KEY[:8]}...{DEEPSEEK_API_KEY[-4:]}\n")
     
     query = """
         SELECT 
@@ -216,16 +264,38 @@ def analyze_and_update_predictions():
     
     matches = execute_query(query)
     
+    print(f"📊 Analiz edilecek maç sayısı: {len(matches) if matches else 0}\n")
+    
     if not matches:
-        print("No matches to analyze")
+        print("💡 DURUM:")
+        print("   • Tüm maçlar zaten analiz edilmiş VEYA")
+        print("   • Bugün maç yok VEYA")
+        print("   • Odds bilgisi eksik")
+        
+        # Check if there are any matches in DB without odds
+        check_query = "SELECT COUNT(*) as count FROM predictions WHERE home_odds IS NULL AND match_date > NOW()"
+        no_odds = execute_query(check_query)
+        if no_odds and no_odds[0]['count'] > 0:
+            print(f"\n⚠️  DİKKAT: {no_odds[0]['count']} maç odds bilgisi olmadan kaydedilmiş!")
+            print("   Bu maçlar analiz edilemez. Veri toplama sürecini kontrol edin.\n")
+        else:
+            print("\n✅ Veritabanında eksik veri yok.\n")
+        
         return 0
     
     analyzed_count = 0
+    error_count = 0
     
-    for match in matches:
-        print(f"  Analyzing: {match['home_team']} vs {match['away_team']}")
+    for idx, match in enumerate(matches, 1):
+        print(f"[{idx}/{len(matches)}] 🔍 {match['home_team']} vs {match['away_team']}")
         
         ai_result = deepseek_predict(match)
+        
+        # Check if prediction was successful
+        if ai_result['prediction'] in ['ERROR', 'PARSE_ERROR', 'NO_API_KEY']:
+            print(f"    ❌ HATA: {ai_result['reasoning']}")
+            error_count += 1
+            continue
         
         try:
             with get_db_cursor() as cur:
@@ -249,14 +319,19 @@ def analyze_and_update_predictions():
                     match['match_id']
                 ))
             
-            print(f"    OK: {ai_result['prediction']} (Confidence: {ai_result['confidence']}%)")
+            risk_emoji = {'LOW': '🟢', 'MEDIUM': '🟡', 'HIGH': '🔴'}.get(ai_result['risk_level'], '⚪')
+            print(f"    ✅ {ai_result['prediction']} | {risk_emoji} {ai_result['risk_level']} | Güven: {ai_result['confidence']:.0f}%")
             analyzed_count += 1
             time.sleep(2)
             
         except Exception as e:
-            print(f"    ERROR: {e}")
+            print(f"    ❌ DB Hatası: {e}")
+            error_count += 1
     
-    print(f"\nAnalyzed {analyzed_count} matches!\n")
+    print("\n" + "="*60)
+    print(f"✅ Analiz Tamamlandı: {analyzed_count} başarılı, {error_count} hatalı")
+    print("="*60 + "\n")
+    
     return analyzed_count
 
 def format_prediction_message(match):
@@ -295,33 +370,35 @@ def format_prediction_message(match):
 {'='*40}
 {match['home_team']} vs {match['away_team']}
 {match['league']}
-Time: {match_time}
+⏰ Saat: {match_time}
 
-ODDS
-Home: {match.get('home_odds', 'N/A')}
-Draw: {match.get('draw_odds', 'N/A')}
-Away: {match.get('away_odds', 'N/A')}
+📊 ORANLAR
+Ev Sahibi: {match.get('home_odds', 'N/A')}
+Beraberlik: {match.get('draw_odds', 'N/A')}
+Deplasman: {match.get('away_odds', 'N/A')}
 
-AI PREDICTION
+🎯 AI TAHMİNİ
 {risk_emoji} {match.get('recommended_bet', 'SKIP')}
 
-Confidence: {match.get('ai_confidence', 0):.0f}%
-Analysis: {match.get('ai_reasoning', 'No analysis')}
+Güven: {match.get('ai_confidence', 0):.0f}%
+Analiz: {match.get('ai_reasoning', 'Analiz yok')}
 Risk: {match.get('risk_level', 'HIGH')}
 
-💰 POTENTIAL ({stake} TL)
-Win: {potential_win:.2f} TL
-Profit: +{potential_profit:.2f} TL
+💰 POTANSİYEL ({stake} TL)
+Kazanç: {potential_win:.2f} TL
+Kâr: +{potential_profit:.2f} TL
 {'='*40}
 """
     return message.strip()
 
 def send_daily_predictions(min_confidence=70, max_risk='LOW'):
     """Send predictions to Telegram - ONLY LOW RISK"""
-    print("\nSending predictions to Telegram...\n")
+    print("\n" + "="*60)
+    print("📱 TELEGRAM BİLDİRİMLERİ GÖNDERİLİYOR")
+    print("="*60 + "\n")
     
     risk_levels = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3}
-    max_risk_value = risk_levels.get(max_risk, 1)  # Default to LOW
+    max_risk_value = risk_levels.get(max_risk, 1)
     
     query = """
         SELECT 
@@ -342,7 +419,7 @@ def send_daily_predictions(min_confidence=70, max_risk='LOW'):
     matches = execute_query(query, params=(min_confidence,))
     
     if not matches:
-        print("  No predictions to send")
+        print("ℹ️  Gönderilecek tahmin yok\n")
         return 0
     
     # Filter by risk level
@@ -352,7 +429,7 @@ def send_daily_predictions(min_confidence=70, max_risk='LOW'):
     ]
     
     if not filtered_matches:
-        print(f"  No predictions matching risk level: {max_risk}")
+        print(f"ℹ️  {max_risk} risk seviyesinde tahmin yok\n")
         return 0
     
     # Calculate total potential profit
@@ -379,14 +456,14 @@ def send_daily_predictions(min_confidence=70, max_risk='LOW'):
             total_potential += profit
     
     header = f"""
-🔥 DAILY VIP PREDICTIONS 🔥
+🔥 GÜNLÜK VIP TAHMİNLER 🔥
 📅 {datetime.now().strftime('%d.%m.%Y')}
-🎯 Total: {len(filtered_matches)} matches
+🎯 Toplam: {len(filtered_matches)} maç
 
-💰 TOTAL POTENTIAL PROFIT
-{total_potential:.2f} TL (if all correct)
+💰 TOPLAM POTANSİYEL KÂR
+{total_potential:.2f} TL (hepsi tutarsa)
 
-📊 Filter: Min {min_confidence}% | Max Risk: {max_risk}
+📊 Filtre: Min %{min_confidence} güven | Max Risk: {max_risk}
 """
     
     send_telegram_message(header)
@@ -408,27 +485,29 @@ def send_daily_predictions(min_confidence=70, max_risk='LOW'):
         if success:
             mark_telegram_sent(match['match_id'], TELEGRAM_CHAT_ID)
             sent_count += 1
-            print(f"  OK: {match['home_team']} vs {match['away_team']}")
+            print(f"  ✅ {match['home_team']} vs {match['away_team']}")
         else:
-            print(f"  FAIL: {match['home_team']} vs {match['away_team']}")
+            print(f"  ❌ {match['home_team']} vs {match['away_team']}")
         
         time.sleep(2)
     
     footer = f"""
 {'='*40}
-✅ {sent_count} predictions sent
-🤖 Powered by DeepSeek AI
-💰 Stake: {STAKE_AMOUNT} TL per match
+✅ {sent_count} tahmin gönderildi
+🤖 DeepSeek AI ile güçlendirildi
+💰 Bahis: {STAKE_AMOUNT} TL/maç
 {'='*40}
 """
     send_telegram_message(footer)
     
-    print(f"\nSent {sent_count} predictions!\n")
+    print(f"\n✅ {sent_count} tahmin başarıyla gönderildi!\n")
     return sent_count
 
 def check_and_update_results():
     """Check match results and update database"""
-    print("\nChecking match results...\n")
+    print("\n" + "="*60)
+    print("🔍 MAÇ SONUÇLARI KONTROL EDİLİYOR")
+    print("="*60 + "\n")
     
     query = """
         SELECT * FROM predictions
@@ -441,8 +520,10 @@ def check_and_update_results():
     matches = execute_query(query)
     
     if not matches:
-        print("  No matches to check")
+        print("ℹ️  Kontrol edilecek maç yok\n")
         return 0
+    
+    print(f"📊 {len(matches)} maç kontrol ediliyor...\n")
     
     updated_count = 0
     
@@ -525,26 +606,30 @@ def check_and_update_results():
                     match_id
                 ))
             
-            status_icon = "OK" if is_correct else "FAIL"
-            print(f"  {status_icon}: {match['home_team']} {home_score}-{away_score} {match['away_team']}")
+            status_icon = "✅" if is_correct else "❌"
+            print(f"  {status_icon} {match['home_team']} {home_score}-{away_score} {match['away_team']} ({profit_loss:+.2f} TL)")
             updated_count += 1
             
             time.sleep(1)
             
         except Exception as e:
-            print(f"  ERROR: {match['home_team']} - {e}")
+            print(f"  ⚠️  {match['home_team']} - Hata: {e}")
     
-    print(f"\nUpdated {updated_count} results!\n")
+    print(f"\n✅ {updated_count} maç sonucu güncellendi!\n")
     return updated_count
 
 def send_daily_report():
     """Send daily performance report"""
-    print("\nGenerating daily report...\n")
+    print("\n" + "="*60)
+    print("📊 GÜNLÜK RAPOR HAZIRLANIYOR")
+    print("="*60 + "\n")
     
     stats = get_performance_stats(days=1)
     
     if not stats or stats['total_predictions'] == 0:
-        send_telegram_message("📊 No predictions to report today.")
+        message = "📊 Bugün rapor edilecek tahmin yok."
+        send_telegram_message(message)
+        print(message + "\n")
         return
     
     total = stats['total_predictions']
@@ -553,25 +638,25 @@ def send_daily_report():
     profit = stats['total_profit_loss'] or 0
     
     report = f"""
-📊 DAILY PERFORMANCE REPORT
+📊 GÜNLÜK PERFORMANS RAPORU
 📅 {datetime.now().strftime('%d.%m.%Y')}
 
 {'='*40}
-📈 STATISTICS
-Total Predictions: {total}
-Correct: {correct} ✅
-Wrong: {total - correct} ❌
-Accuracy: {accuracy:.1f}%
+📈 İSTATİSTİKLER
+Toplam Tahmin: {total}
+Doğru: {correct} ✅
+Yanlış: {total - correct} ❌
+Başarı Oranı: %{accuracy:.1f}
 
-💰 FINANCIAL ({STAKE_AMOUNT} TL/match)
-Profit/Loss: {profit:+.2f} TL
+💰 FİNANSAL ({STAKE_AMOUNT} TL/maç)
+Kâr/Zarar: {profit:+.2f} TL
 
-⭐ Average Confidence: {stats.get('avg_confidence', 0):.1f}%
+⭐ Ortalama Güven: %{stats.get('avg_confidence', 0):.1f}
 {'='*40}
 """
     
     send_telegram_message(report)
-    print("Daily report sent!")
+    print("✅ Günlük rapor gönderildi!\n")
 
 # Flask App
 app = Flask(__name__)
@@ -581,9 +666,16 @@ def home():
     return jsonify({
         "status": "running",
         "service": "Football Match Prediction System",
-        "version": "2.0",
+        "version": "2.1",
         "stake_amount": STAKE_AMOUNT,
         "target_leagues": len(TARGET_LEAGUES),
+        "improvements": [
+            "DeepSeek retry mechanism (3 attempts)",
+            "Response validation",
+            "Better error handling",
+            "Detailed logging",
+            "Exponential backoff"
+        ],
         "endpoints": {
             "/setup": "Create database tables (run once)",
             "/collect": "Collect today's matches",
@@ -601,7 +693,7 @@ def setup_endpoint():
     """Create database tables - run once!"""
     try:
         print("\n" + "="*60)
-        print("CREATING DATABASE TABLES...")
+        print("📊 VERİTABANI TABLOLARI OLUŞTURULUYOR...")
         print("="*60 + "\n")
         
         from create_tables import create_tables
@@ -637,80 +729,4 @@ def collect_endpoint():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route("/analyze")
-def analyze_endpoint():
-    try:
-        count = analyze_and_update_predictions()
-        return jsonify({"success": True, "analyzed": count})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/send")
-def send_endpoint():
-    try:
-        min_confidence = int(request.args.get('min_confidence', 70))
-        max_risk = request.args.get('max_risk', 'LOW')
-        
-        count = send_daily_predictions(min_confidence, max_risk)
-        return jsonify({"success": True, "sent": count})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/check")
-def check_endpoint():
-    try:
-        count = check_and_update_results()
-        return jsonify({"success": True, "updated": count})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/report")
-def report_endpoint():
-    try:
-        send_daily_report()
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/run")
-def run_endpoint():
-    try:
-        results = {}
-        
-        print("Step 1: Collecting matches...")
-        results['collected'] = collect_today_matches(TARGET_LEAGUES)
-        
-        print("Step 2: AI Analysis...")
-        results['analyzed'] = analyze_and_update_predictions()
-        
-        print("Step 3: Sending to Telegram...")
-        results['sent'] = send_daily_predictions(min_confidence=70, max_risk='LOW')
-        
-        return jsonify({"success": True, **results})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/stats")
-def stats_endpoint():
-    try:
-        days = int(request.args.get('days', 30))
-        stats = get_performance_stats(days)
-        return jsonify({"success": True, "stats": stats})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    
-    print("\n" + "="*60)
-    print("FOOTBALL PREDICTION SYSTEM v2.0")
-    print("="*60)
-    print(f"Server: http://0.0.0.0:{port}")
-    print(f"Target Leagues: {len(TARGET_LEAGUES)}")
-    print(f"Stake Amount: {STAKE_AMOUNT} TL")
-    print(f"Risk Filter: LOW only")
-    print(f"DeepSeek AI: {'OK' if DEEPSEEK_API_KEY else 'NOT CONFIGURED'}")
-    print(f"Telegram: {'OK' if TELEGRAM_BOT_TOKEN else 'NOT CONFIGURED'}")
-    print("="*60 + "\n")
-    
-    app.run(host="0.0.0.0", port=port, debug=False)
+@app.
