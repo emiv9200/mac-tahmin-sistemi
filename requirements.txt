@@ -13,5 +13,10 @@ pytz==2024.1
 # PostgreSQL Driver
 psycopg2-binary==2.9.9
 
-# OPTIONAL: Performans ve Monitoring (Önerilen)
+# Production Server
 gunicorn==21.2.0
+
+# Dashboard (Streamlit)
+streamlit==1.29.0
+plotly==5.18.0
+pandas==2.1.4
