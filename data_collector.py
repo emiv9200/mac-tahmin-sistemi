@@ -11,9 +11,20 @@ HEADERS = {
 }
 API_BASE = "https://v3.football.api-sports.io"
 
-# Rate limiting için
+# Multiple bookmakers to try (in order of preference)
+BOOKMAKERS = [
+    8,   # Bet365 (Most reliable)
+    11,  # Betfair
+    5,   # William Hill
+    6,   # Bwin
+    9,   # 188Bet
+    12,  # Unibet
+    3,   # Pinnacle
+]
+
+# Rate limiting
 LAST_REQUEST_TIME = None
-MIN_REQUEST_INTERVAL = 1  # saniye
+MIN_REQUEST_INTERVAL = 1  # seconds
 
 def rate_limit():
     """API rate limit kontrolü"""
@@ -24,22 +35,32 @@ def rate_limit():
             time.sleep(MIN_REQUEST_INTERVAL - elapsed)
     LAST_REQUEST_TIME = time.time()
 
-def api_request(url, params=None):
-    """Hata yönetimli API isteği"""
-    rate_limit()
-    try:
-        response = requests.get(url, headers=HEADERS, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("errors"):
-            print(f"⚠️ API Hatası: {data['errors']}")
-            return None
+def api_request(url, params=None, retry_count=2):
+    """Hata yönetimli API isteği with retry"""
+    for attempt in range(retry_count):
+        rate_limit()
+        try:
+            response = requests.get(url, headers=HEADERS, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
             
-        return data
-    except requests.exceptions.RequestException as e:
-        print(f"❌ İstek hatası: {e}")
-        return None
+            if data.get("errors"):
+                error_msg = data['errors']
+                print(f"⚠️ API Hatası: {error_msg}")
+                if attempt < retry_count - 1:
+                    time.sleep(2)
+                    continue
+                return None
+                
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ İstek hatası (deneme {attempt + 1}/{retry_count}): {e}")
+            if attempt < retry_count - 1:
+                time.sleep(2)
+                continue
+            return None
+    
+    return None
 
 def get_team_form(team_id):
     """Takımın son 5 maçının formu"""
@@ -72,12 +93,12 @@ def get_team_form(team_id):
     
     return form or "N/A"
 
-def get_odds(fixture_id):
-    """Maç için bahis oranlarını çek"""
+def get_odds_from_bookmaker(fixture_id, bookmaker_id):
+    """Tek bir bookmaker'dan odds çek"""
     url = f"{API_BASE}/odds"
     params = {
         "fixture": fixture_id,
-        "bookmaker": 8  # Bet365
+        "bookmaker": bookmaker_id
     }
     
     data = api_request(url, params)
@@ -91,10 +112,14 @@ def get_odds(fixture_id):
         "over_2_5_odds": None,
         "under_2_5_odds": None,
         "btts_yes_odds": None,
-        "btts_no_odds": None
+        "btts_no_odds": None,
+        "bookmaker_id": bookmaker_id
     }
     
     try:
+        if not data["response"] or not data["response"][0].get("bookmakers"):
+            return None
+            
         bookmaker = data["response"][0]["bookmakers"][0]
         
         for bet in bookmaker["bets"]:
@@ -111,12 +136,13 @@ def get_odds(fixture_id):
                         odds_data["away_odds"] = float(value["odd"])
             
             # Goals Over/Under
-            elif bet_name == "Goals Over/Under" and "2.5" in str(bet.get("values", [])):
+            elif bet_name == "Goals Over/Under":
                 for value in bet["values"]:
-                    if "Over" in value["value"]:
-                        odds_data["over_2_5_odds"] = float(value["odd"])
-                    elif "Under" in value["value"]:
-                        odds_data["under_2_5_odds"] = float(value["odd"])
+                    if "2.5" in value["value"]:
+                        if "Over" in value["value"]:
+                            odds_data["over_2_5_odds"] = float(value["odd"])
+                        elif "Under" in value["value"]:
+                            odds_data["under_2_5_odds"] = float(value["odd"])
             
             # Both Teams Score
             elif bet_name == "Both Teams Score":
@@ -125,12 +151,44 @@ def get_odds(fixture_id):
                         odds_data["btts_yes_odds"] = float(value["odd"])
                     elif value["value"] == "No":
                         odds_data["btts_no_odds"] = float(value["odd"])
-    
-    except (KeyError, IndexError, ValueError) as e:
-        print(f"⚠️ Odds parse hatası: {e}")
+        
+        # Check if we got at least basic odds
+        if odds_data["home_odds"] and odds_data["draw_odds"] and odds_data["away_odds"]:
+            return odds_data
+        
         return None
     
-    return odds_data
+    except (KeyError, IndexError, ValueError) as e:
+        print(f"⚠️ Odds parse hatası (bookmaker {bookmaker_id}): {e}")
+        return None
+
+def get_odds(fixture_id):
+    """Maç için bahis oranlarını çek - MULTIPLE BOOKMAKERS"""
+    print(f"  ↳ Odds bilgileri alınıyor...")
+    
+    for bookmaker_id in BOOKMAKERS:
+        bookmaker_names = {
+            8: "Bet365",
+            11: "Betfair", 
+            5: "William Hill",
+            6: "Bwin",
+            9: "188Bet",
+            12: "Unibet",
+            3: "Pinnacle"
+        }
+        bookmaker_name = bookmaker_names.get(bookmaker_id, f"Bookmaker {bookmaker_id}")
+        
+        print(f"     → {bookmaker_name} deneniyor...")
+        odds = get_odds_from_bookmaker(fixture_id, bookmaker_id)
+        
+        if odds:
+            print(f"     ✅ {bookmaker_name}'den alındı!")
+            return odds
+        
+        time.sleep(0.5)  # Bookmaker'lar arası kısa bekleme
+    
+    print(f"     ❌ Hiçbir bookmaker'dan odds alınamadı!")
+    return None
 
 def calculate_team_stats(team_id, last_n=10):
     """Takım istatistiklerini hesapla"""
@@ -169,7 +227,7 @@ def calculate_team_stats(team_id, last_n=10):
     }
 
 def collect_match_data(fixture):
-    """Tek maç için detaylı veri topla ve kaydet"""
+    """Tek maç için detaylı veri topla ve kaydet - ODDS YOKSA DA KAYDET"""
     try:
         fixture_id = str(fixture["fixture"]["id"])
         league = fixture["league"]["name"]
@@ -189,45 +247,67 @@ def collect_match_data(fixture):
         home_form = get_team_form(home_id)
         away_form = get_team_form(away_id)
         
-        # Odds verileri - EN ÖNEMLİ!
-        print("  ↳ Odds bilgileri alınıyor...")
-        odds = get_odds(fixture_id)
-        if not odds:
-            print(f"  ⚠️ Odds bulunamadı, maç atlanıyor")
-            return False
-        
         # İstatistikler
         print("  ↳ İstatistikler hesaplanıyor...")
         home_stats = calculate_team_stats(home_id)
         away_stats = calculate_team_stats(away_id)
         
-        # Veritabanına kaydet
+        # Odds verileri - TRY ALL BOOKMAKERS
+        odds = get_odds(fixture_id)
+        
+        # Veritabanına kaydet (odds yoksa da kaydet!)
         conn = get_db()
         cur = conn.cursor()
         
-        cur.execute("""
-            INSERT INTO predictions (
-                match_id, home_team, away_team, league, match_date,
-                home_odds, draw_odds, away_odds,
-                over_2_5_odds, under_2_5_odds,
-                btts_yes_odds, btts_no_odds,
-                ai_prediction, created_at
-            ) VALUES (
-                %s, %s, %s, %s, %s,
-                %s, %s, %s,
-                %s, %s,
-                %s, %s,
-                %s, %s
-            )
-            ON CONFLICT (match_id) DO NOTHING
-        """, (
-            fixture_id, home_team, away_team, league, match_date,
-            odds["home_odds"], odds["draw_odds"], odds["away_odds"],
-            odds["over_2_5_odds"], odds["under_2_5_odds"],
-            odds["btts_yes_odds"], odds["btts_no_odds"],
-            f"Form: H({home_form}) A({away_form}) | Avg Goals: H({home_stats['goals_avg']}) A({away_stats['goals_avg']})",
-            datetime.now()
-        ))
+        if odds:
+            # Odds varsa normal kayıt
+            cur.execute("""
+                INSERT INTO predictions (
+                    match_id, home_team, away_team, league, match_date,
+                    home_odds, draw_odds, away_odds,
+                    over_2_5_odds, under_2_5_odds,
+                    btts_yes_odds, btts_no_odds,
+                    ai_prediction, created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s
+                )
+                ON CONFLICT (match_id) DO NOTHING
+            """, (
+                fixture_id, home_team, away_team, league, match_date,
+                odds["home_odds"], odds["draw_odds"], odds["away_odds"],
+                odds["over_2_5_odds"], odds["under_2_5_odds"],
+                odds["btts_yes_odds"], odds["btts_no_odds"],
+                f"Form: H({home_form}) A({away_form}) | Avg Goals: H({home_stats['goals_avg']}) A({away_stats['goals_avg']})",
+                datetime.now()
+            ))
+            print(f"  ✅ {home_team} - {away_team} (ODDS ile) kaydedildi!")
+        else:
+            # Odds yoksa NULL ile kaydet - YINE DE KAYDET!
+            cur.execute("""
+                INSERT INTO predictions (
+                    match_id, home_team, away_team, league, match_date,
+                    home_odds, draw_odds, away_odds,
+                    over_2_5_odds, under_2_5_odds,
+                    btts_yes_odds, btts_no_odds,
+                    ai_prediction, created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    NULL, NULL, NULL,
+                    NULL, NULL,
+                    NULL, NULL,
+                    %s, %s
+                )
+                ON CONFLICT (match_id) DO NOTHING
+            """, (
+                fixture_id, home_team, away_team, league, match_date,
+                f"NO_ODDS | Form: H({home_form}) A({away_form}) | Avg Goals: H({home_stats['goals_avg']}) A({away_stats['goals_avg']})",
+                datetime.now()
+            ))
+            print(f"  ⚠️ {home_team} - {away_team} (ODDS OLMADAN) kaydedildi!")
         
         # İstatistik tablosuna kaydet
         cur.execute("""
@@ -246,17 +326,15 @@ def collect_match_data(fixture):
         conn.commit()
         close_db(conn)
         
-        print(f"  ✅ {home_team} - {away_team} başarıyla kaydedildi!")
         return True
         
     except Exception as e:
-        print(f"  ❌ Hata: {e}")
+        print(f"  ❌ Kritik Hata: {e}")
         return False
 
 def collect_today_matches(league_ids=None):
     """Bugünkü maçları topla"""
     if league_ids is None:
-        # Önemli ligler (örnekler)
         league_ids = [
             39,   # Premier League
             140,  # La Liga
@@ -268,9 +346,13 @@ def collect_today_matches(league_ids=None):
     
     today = datetime.now().strftime("%Y-%m-%d")
     
-    print(f"\n🔍 {today} tarihli maçlar aranıyor...\n")
+    print("\n" + "="*60)
+    print(f"🔍 {today} TARİHLİ MAÇLAR ARANLIYOR")
+    print("="*60 + "\n")
     
     total_collected = 0
+    total_with_odds = 0
+    total_without_odds = 0
     
     for league_id in league_ids:
         url = f"{API_BASE}/fixtures"
@@ -281,17 +363,51 @@ def collect_today_matches(league_ids=None):
         
         data = api_request(url, params)
         if not data:
+            print(f"⚠️ Lig {league_id}: API yanıt vermedi")
             continue
         
         fixtures = data.get("response", [])
+        
+        if not fixtures:
+            print(f"ℹ️  Lig {league_id}: Maç yok")
+            continue
+            
         print(f"📌 Lig {league_id}: {len(fixtures)} maç bulundu")
         
         for fixture in fixtures:
             if collect_match_data(fixture):
                 total_collected += 1
+                # Check if odds were found
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT home_odds FROM predictions 
+                    WHERE match_id = %s
+                """, (str(fixture["fixture"]["id"]),))
+                result = cur.fetchone()
+                close_db(conn)
+                
+                if result and result[0] is not None:
+                    total_with_odds += 1
+                else:
+                    total_without_odds += 1
+                
                 time.sleep(2)  # API'ye nazik ol
     
-    print(f"\n✅ Toplam {total_collected} maç kaydedildi!")
+    print("\n" + "="*60)
+    print("📊 TOPLAMA SONUÇLARI")
+    print("="*60)
+    print(f"✅ Toplam Kaydedilen: {total_collected} maç")
+    print(f"🟢 Odds ile: {total_with_odds} maç")
+    print(f"🟡 Odds olmadan: {total_without_odds} maç")
+    
+    if total_without_odds > 0:
+        print(f"\n⚠️ DİKKAT: {total_without_odds} maçın odds bilgisi eksik!")
+        print("   Bu maçlar DeepSeek tarafından analiz EDİLEMEZ.")
+        print("   Ancak veritabanında kayıtlı, ileride odds eklenebilir.")
+    
+    print("="*60 + "\n")
+    
     return total_collected
 
 if __name__ == "__main__":
