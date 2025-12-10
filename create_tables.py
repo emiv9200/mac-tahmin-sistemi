@@ -6,6 +6,31 @@ def create_tables():
     cur = conn.cursor()
     
     print("📊 Veritabanı tabloları oluşturuluyor...\n")
+
+    # ----------------------------------------
+    # ŞEMA GÜNCELLEME (idempotent ALTER komutları)
+    # Mevcut veritabanında eksik kolon/trigger varsa ekler.
+    # ----------------------------------------
+    cur.execute("""
+        ALTER TABLE IF EXISTS predictions
+            ADD COLUMN IF NOT EXISTS has_odds BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS odds_source VARCHAR(50);
+    """)
+    
+    cur.execute("""
+        ALTER TABLE IF EXISTS match_stats
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+    """)
+    
+    cur.execute("""
+        ALTER TABLE IF EXISTS telegram_logs
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+    """)
+    
+    cur.execute("""
+        ALTER TABLE IF EXISTS performance_summary
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+    """)
     
     # ========================================
     # 1. ANA TAHMİN TABLOSU
@@ -18,6 +43,9 @@ def create_tables():
             away_team VARCHAR(100) NOT NULL,
             league VARCHAR(100),
             match_date TIMESTAMP NOT NULL,
+            -- Odds durumu
+            has_odds BOOLEAN DEFAULT FALSE,
+            odds_source VARCHAR(50),
             
             -- Odds bilgileri (ZORUNLU - DeepSeek analizi için)
             home_odds DECIMAL(5,2),
@@ -83,7 +111,8 @@ def create_tables():
             home_win_percentage DECIMAL(5,2),
             away_win_percentage DECIMAL(5,2),
             
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
         );
     """)
     print("  ✅ match_stats tablosu oluşturuldu")
@@ -110,7 +139,8 @@ def create_tables():
             retry_count INTEGER DEFAULT 0,
             
             -- Meta
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
         );
     """)
     print("  ✅ telegram_logs tablosu oluşturuldu")
@@ -141,6 +171,7 @@ def create_tables():
             high_risk_accuracy DECIMAL(5,2),
             
             created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
             
             UNIQUE(period_start, period_end)
         );
@@ -176,6 +207,11 @@ def create_tables():
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_predictions_risk_level 
         ON predictions(risk_level);
+    """)
+    
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_predictions_has_odds 
+        ON predictions(has_odds);
     """)
     
     # Match stats tablosu index'i
@@ -263,6 +299,30 @@ def create_tables():
         DROP TRIGGER IF EXISTS update_predictions_updated_at ON predictions;
         CREATE TRIGGER update_predictions_updated_at
         BEFORE UPDATE ON predictions
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+    """)
+    
+    cur.execute("""
+        DROP TRIGGER IF EXISTS update_match_stats_updated_at ON match_stats;
+        CREATE TRIGGER update_match_stats_updated_at
+        BEFORE UPDATE ON match_stats
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+    """)
+    
+    cur.execute("""
+        DROP TRIGGER IF EXISTS update_telegram_logs_updated_at ON telegram_logs;
+        CREATE TRIGGER update_telegram_logs_updated_at
+        BEFORE UPDATE ON telegram_logs
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+    """)
+    
+    cur.execute("""
+        DROP TRIGGER IF EXISTS update_performance_summary_updated_at ON performance_summary;
+        CREATE TRIGGER update_performance_summary_updated_at
+        BEFORE UPDATE ON performance_summary
         FOR EACH ROW
         EXECUTE FUNCTION update_updated_at_column();
     """)
