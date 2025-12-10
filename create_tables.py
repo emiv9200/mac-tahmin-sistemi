@@ -7,10 +7,7 @@ def create_tables():
     
     print("📊 Veritabanı tabloları oluşturuluyor...\n")
 
-    # ----------------------------------------
     # ŞEMA GÜNCELLEME (idempotent ALTER komutları)
-    # Mevcut veritabanında eksik kolon/trigger varsa ekler.
-    # ----------------------------------------
     cur.execute("""
         ALTER TABLE IF EXISTS predictions
             ADD COLUMN IF NOT EXISTS has_odds BOOLEAN DEFAULT FALSE,
@@ -31,10 +28,8 @@ def create_tables():
         ALTER TABLE IF EXISTS performance_summary
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
     """)
-    
-    # ========================================
-    # 1. ANA TAHMİN TABLOSU
-    # ========================================
+
+    # 1. predictions
     cur.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             id SERIAL PRIMARY KEY,
@@ -62,7 +57,7 @@ def create_tables():
             ai_reasoning TEXT,
             recommended_bet VARCHAR(100),
             risk_level VARCHAR(20) CHECK (risk_level IN ('LOW', 'MEDIUM', 'HIGH')),
-            expected_value DECIMAL(6,2), -- Beklenen değer hesaplaması
+            expected_value DECIMAL(6,2),
             
             -- Maç sonuç bilgileri
             home_score INTEGER,
@@ -83,161 +78,81 @@ def create_tables():
     """)
     print("  ✅ predictions tablosu oluşturuldu")
     
-    # ========================================
-    # 2. İSTATİSTİK TABLOSU
-    # ========================================
+    # 2. match_stats
     cur.execute("""
         CREATE TABLE IF NOT EXISTS match_stats (
             id SERIAL PRIMARY KEY,
             match_id VARCHAR(50) UNIQUE NOT NULL REFERENCES predictions(match_id) ON DELETE CASCADE,
-            
-            -- Takım formu
             home_form VARCHAR(20),
             away_form VARCHAR(20),
-            
-            -- Gol ortalamaları
             home_goals_avg DECIMAL(4,2),
             away_goals_avg DECIMAL(4,2),
             home_conceded_avg DECIMAL(4,2),
             away_conceded_avg DECIMAL(4,2),
-            
-            -- Kafa kafaya istatistikler
             head_to_head TEXT,
             h2h_home_wins INTEGER DEFAULT 0,
             h2h_draws INTEGER DEFAULT 0,
             h2h_away_wins INTEGER DEFAULT 0,
-            
-            -- Ek istatistikler
             home_win_percentage DECIMAL(5,2),
             away_win_percentage DECIMAL(5,2),
-            
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """)
     print("  ✅ match_stats tablosu oluşturuldu")
     
-    # ========================================
-    # 3. TELEGRAM MESAJ GEÇMİŞİ
-    # ========================================
+    # 3. telegram_logs
     cur.execute("""
         CREATE TABLE IF NOT EXISTS telegram_logs (
             id SERIAL PRIMARY KEY,
             match_id VARCHAR(50) REFERENCES predictions(match_id) ON DELETE CASCADE,
-            
-            -- Mesaj bilgileri
             message_text TEXT NOT NULL,
-            message_type VARCHAR(20) DEFAULT 'prediction', -- prediction, result, error
-            
-            -- Gönderim bilgileri
+            message_type VARCHAR(20) DEFAULT 'prediction',
             chat_id VARCHAR(50),
             sent_at TIMESTAMP DEFAULT NOW(),
             success BOOLEAN NOT NULL,
-            
-            -- Hata yönetimi
             error_message TEXT,
             retry_count INTEGER DEFAULT 0,
-            
-            -- Meta
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         );
     """)
     print("  ✅ telegram_logs tablosu oluşturuldu")
     
-    # ========================================
-    # 4. PERFORMANS TAKIP TABLOSU (Yeni!)
-    # ========================================
+    # 4. performance_summary
     cur.execute("""
         CREATE TABLE IF NOT EXISTS performance_summary (
             id SERIAL PRIMARY KEY,
-            
-            -- Tarih aralığı
             period_start DATE NOT NULL,
             period_end DATE NOT NULL,
-            
-            -- Genel istatistikler
             total_predictions INTEGER DEFAULT 0,
             correct_predictions INTEGER DEFAULT 0,
             accuracy_rate DECIMAL(5,2),
-            
-            -- Finansal performans
             total_profit_loss DECIMAL(10,2) DEFAULT 0,
-            roi DECIMAL(6,2), -- Return on Investment
-            
-            -- Risk bazlı başarı
+            roi DECIMAL(6,2),
             low_risk_accuracy DECIMAL(5,2),
             medium_risk_accuracy DECIMAL(5,2),
             high_risk_accuracy DECIMAL(5,2),
-            
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW(),
-            
             UNIQUE(period_start, period_end)
         );
     """)
     print("  ✅ performance_summary tablosu oluşturuldu")
     
-    # ========================================
-    # 5. PERFORMANS İÇİN INDEX'LER
-    # ========================================
-    print("\n🚀 Performans index'leri oluşturuluyor...")
-    
-    # Predictions tablosu index'leri
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_predictions_match_date 
-        ON predictions(match_date);
-    """)
-    
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_predictions_league 
-        ON predictions(league);
-    """)
-    
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_predictions_telegram_sent 
-        ON predictions(telegram_sent) WHERE telegram_sent = FALSE;
-    """)
-    
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_predictions_created_at 
-        ON predictions(created_at DESC);
-    """)
-    
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_predictions_risk_level 
-        ON predictions(risk_level);
-    """)
-    
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_predictions_has_odds 
-        ON predictions(has_odds);
-    """)
-    
-    # Match stats tablosu index'i
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_match_stats_match_id 
-        ON match_stats(match_id);
-    """)
-    
-    # Telegram logs index'leri
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_telegram_logs_match_id 
-        ON telegram_logs(match_id);
-    """)
-    
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_telegram_logs_sent_at 
-        ON telegram_logs(sent_at DESC);
-    """)
-    
+    # Indexler
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_match_date ON predictions(match_date);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_league ON predictions(league);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_telegram_sent ON predictions(telegram_sent) WHERE telegram_sent = FALSE;")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_created_at ON predictions(created_at DESC);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_risk_level ON predictions(risk_level);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_predictions_has_odds ON predictions(has_odds);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_match_stats_match_id ON match_stats(match_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_telegram_logs_match_id ON telegram_logs(match_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_telegram_logs_sent_at ON telegram_logs(sent_at DESC);")
     print("  ✅ Tüm index'ler oluşturuldu")
     
-    # ========================================
-    # 6. KULLANIŞLI VIEW'LER
-    # ========================================
-    print("\n📊 Analiz view'ları oluşturuluyor...")
-    
+    # View'lar
     cur.execute("""
         CREATE OR REPLACE VIEW pending_predictions AS
         SELECT 
@@ -280,11 +195,7 @@ def create_tables():
     """)
     print("  ✅ daily_performance view'ı oluşturuldu")
     
-    # ========================================
-    # 7. OTOMATIK GÜNCELLEME TRİGGER'I
-    # ========================================
-    print("\n⚡ Trigger'lar oluşturuluyor...")
-    
+    # updated_at trigger fonksiyonu
     cur.execute("""
         CREATE OR REPLACE FUNCTION update_updated_at_column()
         RETURNS TRIGGER AS $$
@@ -326,11 +237,8 @@ def create_tables():
         FOR EACH ROW
         EXECUTE FUNCTION update_updated_at_column();
     """)
-    print("  ✅ updated_at trigger'ı oluşturuldu")
+    print("  ✅ Trigger'lar oluşturuldu")
     
-    # ========================================
-    # COMMIT VE SONUÇ
-    # ========================================
     conn.commit()
     close_db(conn)
     
@@ -348,11 +256,7 @@ def create_tables():
     print("  2. daily_performance   - Günlük performans")
     
     print("\n🚀 Performans Optimizasyonları:")
-    print("  ✓ 8 adet index oluşturuldu")
-    print("  ✓ Foreign key constraints eklendi")
-    print("  ✓ Otomatik updated_at trigger'ı aktif")
-    print("  ✓ CHECK constraints eklendi")
-    
+    print("  ✓ index'ler ve trigger'lar")
     print("\n💡 Kullanım Örnekleri:")
     print("  • Bekleyen tahminler: SELECT * FROM pending_predictions;")
     print("  • Son 30 gün performans: SELECT * FROM daily_performance;")
@@ -363,9 +267,7 @@ def drop_all_tables():
     """Tüm tabloları siler - DIKKATLI KULLANIN!"""
     conn = get_db()
     cur = conn.cursor()
-    
     print("⚠️  TÜM TABLOLAR SİLİNİYOR...")
-    
     cur.execute("DROP VIEW IF EXISTS pending_predictions CASCADE;")
     cur.execute("DROP VIEW IF EXISTS daily_performance CASCADE;")
     cur.execute("DROP TABLE IF EXISTS telegram_logs CASCADE;")
@@ -373,10 +275,8 @@ def drop_all_tables():
     cur.execute("DROP TABLE IF EXISTS match_stats CASCADE;")
     cur.execute("DROP TABLE IF EXISTS predictions CASCADE;")
     cur.execute("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE;")
-    
     conn.commit()
     close_db(conn)
-    
     print("✅ Tüm tablolar silindi!")
 
 def reset_database():
@@ -387,7 +287,6 @@ def reset_database():
 
 if __name__ == "__main__":
     import sys
-    
     if len(sys.argv) > 1:
         if sys.argv[1] == "--reset":
             reset_database()
