@@ -1,543 +1,317 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+import requests
 from datetime import datetime, timedelta
-from database import (
-    execute_query,
-    get_performance_stats,
-    get_league_performance,
-    health_check
-)
+from database import get_db, close_db
+import os
+import time
 
-# Page config
-st.set_page_config(
-    page_title="⚽ Football Predictions Dashboard",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+API_KEY = os.getenv("API_KEY")
+HEADERS = {
+    "x-rapidapi-key": API_KEY,
+    "x-rapidapi-host": "v3.football.api-sports.io"
+}
+API_BASE = "https://v3.football.api-sports.io"
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        font-weight: bold;
-        text-align: center;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-    }
-    .stMetric {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
+BOOKMAKERS = [8, 11, 5, 6, 9, 12, 3]
 
-# Header
-st.markdown('<h1 class="main-header">⚽ FOOTBALL PREDICTIONS DASHBOARD</h1>', unsafe_allow_html=True)
+LAST_REQUEST_TIME = None
+MIN_REQUEST_INTERVAL = 1  # seconds
 
-# Sidebar
-with st.sidebar:
-    st.image("https://img.icons8.com/color/96/000000/football.png", width=80)
-    st.title("⚙️ Ayarlar")
-    
-    # Date range selector
-    date_range = st.selectbox(
-        "📅 Zaman Aralığı",
-        ["Son 7 Gün", "Son 30 Gün", "Son 90 Gün", "Tüm Zamanlar"],
-        index=1
-    )
-    
-    days_map = {
-        "Son 7 Gün": 7,
-        "Son 30 Gün": 30,
-        "Son 90 Gün": 90,
-        "Tüm Zamanlar": 36500
-    }
-    selected_days = days_map[date_range]
-    
-    # Risk filter
-    risk_filter = st.multiselect(
-        "🎯 Risk Seviyesi",
-        ["LOW", "MEDIUM", "HIGH"],
-        default=["LOW", "MEDIUM", "HIGH"]
-    )
-    
-    # League filter
-    league_filter = st.text_input("🏆 Lig Filtrele (opsiyonel)")
-    
-    st.divider()
-    
-    # Database health check
-    is_healthy, latency = health_check()
-    if is_healthy:
-        st.success(f"✅ Database Bağlantısı: {latency}ms")
-    else:
-        st.error("❌ Database Bağlantısı: Hatalı")
-    
-    st.divider()
-    st.caption("🤖 Powered by DeepSeek AI")
-    st.caption("💻 Developed with Streamlit")
+def rate_limit():
+    global LAST_REQUEST_TIME
+    if LAST_REQUEST_TIME:
+        elapsed = time.time() - LAST_REQUEST_TIME
+        if elapsed < MIN_REQUEST_INTERVAL:
+            time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+    LAST_REQUEST_TIME = time.time()
 
-# Main content
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Genel Bakış", "📈 Performans", "🏆 Ligler", "📋 Tahminler"])
+def api_request(url, params=None, retry_count=2):
+    for attempt in range(retry_count):
+        rate_limit()
+        try:
+            response = requests.get(url, headers=HEADERS, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("errors"):
+                error_msg = data['errors']
+                print(f"⚠️ API Hatası: {error_msg}")
+                if attempt < retry_count - 1:
+                    time.sleep(2)
+                    continue
+                return None
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ İstek hatası (deneme {attempt + 1}/{retry_count}): {e}")
+            if attempt < retry_count - 1:
+                time.sleep(2)
+                continue
+            return None
+    return None
 
-# ============================================
-# TAB 1: GENEL BAKIŞ
-# ============================================
-with tab1:
-    # Get performance stats
-    stats = get_performance_stats(selected_days)
-    
-    if stats and stats['total_predictions'] > 0:
-        # Key Metrics
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric(
-                "🎯 Toplam Tahmin",
-                f"{stats['total_predictions']}",
-                delta=None
-            )
-        
-        with col2:
-            accuracy = stats['accuracy_rate'] or 0
-            st.metric(
-                "✅ Başarı Oranı",
-                f"%{accuracy:.1f}",
-                delta=f"%{accuracy - 50:.1f}" if accuracy > 50 else f"%{accuracy - 50:.1f}"
-            )
-        
-        with col3:
-            correct = stats['correct_predictions'] or 0
-            st.metric(
-                "🟢 Doğru",
-                f"{correct}",
-                delta=None
-            )
-        
-        with col4:
-            wrong = stats['total_predictions'] - correct
-            st.metric(
-                "🔴 Yanlış",
-                f"{wrong}",
-                delta=None
-            )
-        
-        with col5:
-            profit = stats['total_profit_loss'] or 0
-            st.metric(
-                "💰 Kar/Zarar",
-                f"{profit:+.0f} TL",
-                delta=f"{profit:+.0f} TL"
-            )
-        
-        st.divider()
-        
-        # Charts
-        col_left, col_right = st.columns(2)
-        
-        with col_left:
-            st.subheader("📊 Başarı Dağılımı")
-            
-            # Pie chart
-            fig_pie = go.Figure(data=[go.Pie(
-                labels=['Doğru', 'Yanlış'],
-                values=[correct, wrong],
-                hole=0.4,
-                marker_colors=['#00c853', '#ff1744']
-            )])
-            fig_pie.update_layout(
-                height=300,
-                showlegend=True,
-                annotations=[dict(text=f'%{accuracy:.1f}', x=0.5, y=0.5, font_size=20, showarrow=False)]
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-        
-        with col_right:
-            st.subheader("🎲 Risk Dağılımı")
-            
-            # Risk distribution
-            risk_query = f"""
-                SELECT 
-                    risk_level,
-                    COUNT(*) as count
-                FROM predictions
-                WHERE match_date >= CURRENT_DATE - INTERVAL '{selected_days} days'
-                    AND result IS NOT NULL
-                    AND risk_level IS NOT NULL
-                GROUP BY risk_level
-                ORDER BY risk_level;
-            """
-            risk_data = execute_query(risk_query)
-            
-            if risk_data:
-                df_risk = pd.DataFrame(risk_data)
-                fig_risk = px.bar(
-                    df_risk,
-                    x='risk_level',
-                    y='count',
-                    color='risk_level',
-                    color_discrete_map={'LOW': '#00c853', 'MEDIUM': '#ffc107', 'HIGH': '#ff1744'},
-                    labels={'risk_level': 'Risk Seviyesi', 'count': 'Tahmin Sayısı'}
-                )
-                fig_risk.update_layout(height=300, showlegend=False)
-                st.plotly_chart(fig_risk, use_container_width=True)
-        
-        st.divider()
-        
-        # Daily performance trend
-        st.subheader("📈 Günlük Performans Trendi")
-        
-        daily_query = f"""
-            SELECT 
-                DATE(match_date) as day,
-                COUNT(*) as total,
-                COUNT(CASE WHEN is_correct = TRUE THEN 1 END) as correct,
-                SUM(COALESCE(profit_loss, 0)) as profit
-            FROM predictions
-            WHERE match_date >= CURRENT_DATE - INTERVAL '{selected_days} days'
-                AND result IS NOT NULL
-            GROUP BY DATE(match_date)
-            ORDER BY day;
-        """
-        daily_data = execute_query(daily_query)
-        
-        if daily_data:
-            df_daily = pd.DataFrame(daily_data)
-            df_daily['accuracy'] = (df_daily['correct'] / df_daily['total'] * 100).round(1)
-            df_daily['cumulative_profit'] = df_daily['profit'].cumsum()
-            
-            fig_trend = go.Figure()
-            
-            # Accuracy line
-            fig_trend.add_trace(go.Scatter(
-                x=df_daily['day'],
-                y=df_daily['accuracy'],
-                name='Başarı Oranı (%)',
-                line=dict(color='#667eea', width=3),
-                yaxis='y'
-            ))
-            
-            # Cumulative profit line
-            fig_trend.add_trace(go.Scatter(
-                x=df_daily['day'],
-                y=df_daily['cumulative_profit'],
-                name='Kümülatif Kâr (TL)',
-                line=dict(color='#764ba2', width=3),
-                yaxis='y2'
-            ))
-            
-            fig_trend.update_layout(
-                height=400,
-                xaxis=dict(title='Tarih'),
-                yaxis=dict(title='Başarı Oranı (%)', side='left', showgrid=False),
-                yaxis2=dict(title='Kümülatif Kâr (TL)', side='right', overlaying='y', showgrid=False),
-                hovermode='x unified'
-            )
-            
-            st.plotly_chart(fig_trend, use_container_width=True)
-    
-    else:
-        st.warning("⚠️ Bu tarih aralığında veri bulunamadı.")
-
-# ============================================
-# TAB 2: PERFORMANS ANALİZİ
-# ============================================
-with tab2:
-    st.subheader("📊 Detaylı Performans Analizi")
-    
-    # Confidence vs Accuracy
-    conf_query = f"""
-        SELECT 
-            CASE 
-                WHEN ai_confidence >= 80 THEN '80-100%'
-                WHEN ai_confidence >= 70 THEN '70-80%'
-                WHEN ai_confidence >= 60 THEN '60-70%'
-                ELSE '< 60%'
-            END as confidence_range,
-            COUNT(*) as total,
-            COUNT(CASE WHEN is_correct = TRUE THEN 1 END) as correct,
-            ROUND(COUNT(CASE WHEN is_correct = TRUE THEN 1 END)::DECIMAL / COUNT(*) * 100, 1) as accuracy
-        FROM predictions
-        WHERE match_date >= CURRENT_DATE - INTERVAL '{selected_days} days'
-            AND result IS NOT NULL
-            AND ai_confidence IS NOT NULL
-        GROUP BY confidence_range
-        ORDER BY confidence_range DESC;
-    """
-    conf_data = execute_query(conf_query)
-    
-    if conf_data:
-        df_conf = pd.DataFrame(conf_data)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            fig_conf = px.bar(
-                df_conf,
-                x='confidence_range',
-                y='accuracy',
-                color='accuracy',
-                color_continuous_scale='RdYlGn',
-                labels={'confidence_range': 'Güven Aralığı', 'accuracy': 'Başarı Oranı (%)'},
-                title='Güven Skoru vs Başarı Oranı'
-            )
-            fig_conf.update_layout(height=400, showlegend=False)
-            st.plotly_chart(fig_conf, use_container_width=True)
-        
-        with col2:
-            fig_total = px.bar(
-                df_conf,
-                x='confidence_range',
-                y='total',
-                color='total',
-                color_continuous_scale='Blues',
-                labels={'confidence_range': 'Güven Aralığı', 'total': 'Tahmin Sayısı'},
-                title='Güven Aralığına Göre Tahmin Dağılımı'
-            )
-            fig_total.update_layout(height=400, showlegend=False)
-            st.plotly_chart(fig_total, use_container_width=True)
-    
-    st.divider()
-    
-    # Prediction type performance
-    st.subheader("🎯 Tahmin Tipi Bazlı Performans")
-    
-    pred_query = f"""
-        SELECT 
-            ai_prediction as prediction_type,
-            COUNT(*) as total,
-            COUNT(CASE WHEN is_correct = TRUE THEN 1 END) as correct,
-            ROUND(COUNT(CASE WHEN is_correct = TRUE THEN 1 END)::DECIMAL / COUNT(*) * 100, 1) as accuracy,
-            SUM(COALESCE(profit_loss, 0)) as profit
-        FROM predictions
-        WHERE match_date >= CURRENT_DATE - INTERVAL '{selected_days} days'
-            AND result IS NOT NULL
-            AND ai_prediction IS NOT NULL
-            AND ai_prediction NOT LIKE '%Form:%'
-        GROUP BY ai_prediction
-        ORDER BY total DESC
-        LIMIT 10;
-    """
-    pred_data = execute_query(pred_query)
-    
-    if pred_data:
-        df_pred = pd.DataFrame(pred_data)
-        
-        fig_pred = go.Figure()
-        
-        fig_pred.add_trace(go.Bar(
-            name='Toplam',
-            x=df_pred['prediction_type'],
-            y=df_pred['total'],
-            marker_color='lightblue'
-        ))
-        
-        fig_pred.add_trace(go.Bar(
-            name='Doğru',
-            x=df_pred['prediction_type'],
-            y=df_pred['correct'],
-            marker_color='green'
-        ))
-        
-        fig_pred.update_layout(
-            height=400,
-            barmode='group',
-            xaxis_title='Tahmin Tipi',
-            yaxis_title='Sayı'
-        )
-        
-        st.plotly_chart(fig_pred, use_container_width=True)
-        
-        # Table
-        st.dataframe(
-            df_pred.style.background_gradient(subset=['accuracy'], cmap='RdYlGn'),
-            use_container_width=True
-        )
-
-# ============================================
-# TAB 3: LİG PERFORMANSI
-# ============================================
-with tab3:
-    st.subheader("🏆 Lig Bazlı Performans")
-    
-    league_data = get_league_performance(selected_days)
-    
-    if league_data:
-        df_league = pd.DataFrame(league_data)
-        
-        # Top performing leagues
-        st.markdown("### 🥇 En Başarılı Ligler")
-        
-        fig_league = px.bar(
-            df_league.head(10),
-            x='league',
-            y='accuracy_rate',
-            color='accuracy_rate',
-            color_continuous_scale='RdYlGn',
-            labels={'league': 'Lig', 'accuracy_rate': 'Başarı Oranı (%)'},
-            hover_data=['total_predictions', 'total_profit_loss']
-        )
-        fig_league.update_layout(height=400, showlegend=False)
-        fig_league.update_xaxes(tickangle=45)
-        st.plotly_chart(fig_league, use_container_width=True)
-        
-        st.divider()
-        
-        # League performance table
-        st.markdown("### 📊 Tüm Ligler Detay")
-        
-        # Add emoji based on profit
-        def profit_emoji(val):
-            if val > 0:
-                return f"🟢 +{val:.0f} TL"
-            elif val < 0:
-                return f"🔴 {val:.0f} TL"
+def get_team_form(team_id):
+    url = f"{API_BASE}/fixtures"
+    params = {"team": team_id, "last": 5}
+    data = api_request(url, params)
+    if not data:
+        return "N/A"
+    form = ""
+    for match in data.get("response", []):
+        try:
+            teams = match["teams"]
+            goals = match["goals"]
+            is_home = teams["home"]["id"] == team_id
+            goals_for = goals["home"] if is_home else goals["away"]
+            goals_against = goals["away"] if is_home else goals["home"]
+            if goals_for > goals_against:
+                form += "W"
+            elif goals_for == goals_against:
+                form += "D"
             else:
-                return "⚪ 0 TL"
-        
-        df_league['Kar/Zarar'] = df_league['total_profit_loss'].apply(profit_emoji)
-        df_league['Başarı'] = df_league['accuracy_rate'].apply(lambda x: f"%{x:.1f}")
-        
-        display_df = df_league[['league', 'total_predictions', 'correct_predictions', 'Başarı', 'Kar/Zarar']]
-        display_df.columns = ['Lig', 'Toplam', 'Doğru', 'Başarı Oranı', 'Kar/Zarar']
-        
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            height=400
-        )
-    else:
-        st.warning("⚠️ Lig performans verisi bulunamadı.")
+                form += "L"
+        except (KeyError, TypeError):
+            continue
+    return form or "N/A"
 
-# ============================================
-# TAB 4: TAHMİN LİSTESİ
-# ============================================
-with tab4:
-    st.subheader("📋 Tüm Tahminler")
-    
-    # Filters
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        result_filter = st.selectbox(
-            "Sonuç Durumu",
-            ["Tümü", "Doğru", "Yanlış", "Beklemede"]
-        )
-    
-    with col2:
-        sort_by = st.selectbox(
-            "Sırala",
-            ["Tarih (Yeni)", "Tarih (Eski)", "Güven (Yüksek)", "Kâr (Yüksek)"]
-        )
-    
-    with col3:
-        limit = st.number_input("Göster", min_value=10, max_value=100, value=20, step=10)
-    
-    # Build query
-    risk_filter_sql = "'" + "','".join(risk_filter) + "'"
-    
-    where_clauses = [
-        f"match_date >= CURRENT_DATE - INTERVAL '{selected_days} days'",
-        f"risk_level IN ({risk_filter_sql})"
-    ]
-    
-    if league_filter:
-        where_clauses.append(f"league ILIKE '%{league_filter}%'")
-    
-    if result_filter == "Doğru":
-        where_clauses.append("is_correct = TRUE")
-    elif result_filter == "Yanlış":
-        where_clauses.append("is_correct = FALSE")
-    elif result_filter == "Beklemede":
-        where_clauses.append("result IS NULL AND match_date > NOW()")
-    
-    order_map = {
-        "Tarih (Yeni)": "match_date DESC",
-        "Tarih (Eski)": "match_date ASC",
-        "Güven (Yüksek)": "ai_confidence DESC",
-        "Kâr (Yüksek)": "profit_loss DESC NULLS LAST"
+def get_odds_from_bookmaker(fixture_id, bookmaker_id):
+    url = f"{API_BASE}/odds"
+    params = {"fixture": fixture_id, "bookmaker": bookmaker_id}
+    data = api_request(url, params)
+    if not data or not data.get("response"):
+        return None
+    odds_data = {
+        "home_odds": None,
+        "draw_odds": None,
+        "away_odds": None,
+        "over_2_5_odds": None,
+        "under_2_5_odds": None,
+        "btts_yes_odds": None,
+        "btts_no_odds": None,
+        "bookmaker_id": bookmaker_id
     }
-    
-    predictions_query = f"""
-        SELECT 
-            match_id,
-            home_team,
-            away_team,
-            league,
-            match_date,
-            ai_prediction,
-            ai_confidence,
-            risk_level,
-            recommended_bet,
-            result,
-            is_correct,
-            profit_loss,
-            telegram_sent
-        FROM predictions
-        WHERE {' AND '.join(where_clauses)}
-        ORDER BY {order_map[sort_by]}
-        LIMIT {limit};
-    """
-    
-    predictions = execute_query(predictions_query)
-    
-    if predictions:
-        # Display as cards
-        for pred in predictions:
-            with st.container():
-                col1, col2, col3 = st.columns([3, 2, 1])
-                
-                with col1:
-                    # Match info
-                    match_emoji = "⚽"
-                    if pred['is_correct'] == True:
-                        match_emoji = "✅"
-                    elif pred['is_correct'] == False:
-                        match_emoji = "❌"
-                    
-                    st.markdown(f"### {match_emoji} {pred['home_team']} vs {pred['away_team']}")
-                    st.caption(f"🏆 {pred['league']} | 📅 {pred['match_date'].strftime('%d.%m.%Y %H:%M')}")
-                
-                with col2:
-                    # Prediction
-                    risk_emoji = {'LOW': '🟢', 'MEDIUM': '🟡', 'HIGH': '🔴'}.get(pred['risk_level'], '⚪')
-                    st.markdown(f"**Tahmin:** {pred['ai_prediction']}")
-                    st.markdown(f"**Güven:** {pred['ai_confidence']:.0f}% | **Risk:** {risk_emoji} {pred['risk_level']}")
-                
-                with col3:
-                    # Result
-                    if pred['result']:
-                        st.markdown(f"**Sonuç:** {pred['result']}")
-                        if pred['profit_loss']:
-                            profit_color = "green" if pred['profit_loss'] > 0 else "red"
-                            st.markdown(f"**Kâr:** <span style='color:{profit_color}'>{pred['profit_loss']:+.0f} TL</span>", unsafe_allow_html=True)
-                    else:
-                        st.markdown("**Durum:** Beklemede...")
-                
-                st.divider()
-    else:
-        st.info("ℹ️ Seçilen filtrelere uygun tahmin bulunamadı.")
+    try:
+        if not data["response"] or not data["response"][0].get("bookmakers"):
+            return None
+        bookmaker = data["response"][0]["bookmakers"][0]
+        for bet in bookmaker["bets"]:
+            bet_name = bet["name"]
+            if bet_name == "Match Winner":
+                for value in bet["values"]:
+                    if value["value"] == "Home":
+                        odds_data["home_odds"] = float(value["odd"])
+                    elif value["value"] == "Draw":
+                        odds_data["draw_odds"] = float(value["odd"])
+                    elif value["value"] == "Away":
+                        odds_data["away_odds"] = float(value["odd"])
+            elif bet_name == "Goals Over/Under":
+                for value in bet["values"]:
+                    if "2.5" in value["value"]:
+                        if "Over" in value["value"]:
+                            odds_data["over_2_5_odds"] = float(value["odd"])
+                        elif "Under" in value["value"]:
+                            odds_data["under_2_5_odds"] = float(value["odd"])
+            elif bet_name == "Both Teams Score":
+                for value in bet["values"]:
+                    if value["value"] == "Yes":
+                        odds_data["btts_yes_odds"] = float(value["odd"])
+                    elif value["value"] == "No":
+                        odds_data["btts_no_odds"] = float(value["odd"])
+        if odds_data["home_odds"] and odds_data["draw_odds"] and odds_data["away_odds"]:
+            return odds_data
+        return None
+    except (KeyError, IndexError, ValueError) as e:
+        print(f"⚠️ Odds parse hatası (bookmaker {bookmaker_id}): {e}")
+        return None
 
-# Footer
-st.divider()
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.caption("🤖 Powered by DeepSeek AI")
-with col2:
-    st.caption("⚽ Football Prediction System v2.1")
-with col3:
-    st.caption(f"📅 Son güncelleme: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+def get_odds(fixture_id):
+    print(f"  ↳ Odds bilgileri alınıyor...")
+    for bookmaker_id in BOOKMAKERS:
+        bookmaker_names = {
+            8: "Bet365",
+            11: "Betfair", 
+            5: "William Hill",
+            6: "Bwin",
+            9: "188Bet",
+            12: "Unibet",
+            3: "Pinnacle"
+        }
+        bookmaker_name = bookmaker_names.get(bookmaker_id, f"Bookmaker {bookmaker_id}")
+        print(f"     → {bookmaker_name} deneniyor...")
+        odds = get_odds_from_bookmaker(fixture_id, bookmaker_id)
+        if odds:
+            odds["odds_source"] = bookmaker_name
+            print(f"     ✅ {bookmaker_name}'den alındı!")
+            return odds
+        time.sleep(0.5)
+    print(f"     ❌ Hiçbir bookmaker'dan odds alınamadı!")
+    return None
+
+def calculate_team_stats(team_id, last_n=10):
+    url = f"{API_BASE}/fixtures"
+    params = {"team": team_id, "last": last_n}
+    data = api_request(url, params)
+    if not data:
+        return {"goals_avg": 0, "conceded_avg": 0}
+    total_goals = 0
+    total_conceded = 0
+    match_count = 0
+    for match in data.get("response", []):
+        try:
+            teams = match["teams"]
+            goals = match["goals"]
+            is_home = teams["home"]["id"] == team_id
+            goals_for = goals["home"] if is_home else goals["away"]
+            goals_against = goals["away"] if is_home else goals["home"]
+            total_goals += goals_for
+            total_conceded += goals_against
+            match_count += 1
+        except (KeyError, TypeError):
+            continue
+    if match_count == 0:
+        return {"goals_avg": 0, "conceded_avg": 0}
+    return {
+        "goals_avg": round(total_goals / match_count, 2),
+        "conceded_avg": round(total_conceded / match_count, 2)
+    }
+
+def collect_match_data(fixture):
+    try:
+        fixture_id = str(fixture["fixture"]["id"])
+        league = fixture["league"]["name"]
+        match_date = fixture["fixture"]["date"]
+        home = fixture["teams"]["home"]
+        away = fixture["teams"]["away"]
+        home_team = home["name"]
+        away_team = away["name"]
+        home_id = home["id"]
+        away_id = away["id"]
+        print(f"\n📊 Veri toplama: {home_team} vs {away_team}")
+        print("  ↳ Form bilgileri alınıyor...")
+        home_form = get_team_form(home_id)
+        away_form = get_team_form(away_id)
+        print("  ↳ İstatistikler hesaplanıyor...")
+        home_stats = calculate_team_stats(home_id)
+        away_stats = calculate_team_stats(away_id)
+        odds = get_odds(fixture_id)
+        conn = get_db()
+        cur = conn.cursor()
+        if odds:
+            cur.execute("""
+                INSERT INTO predictions (
+                    match_id, home_team, away_team, league, match_date,
+                    has_odds, odds_source,
+                    home_odds, draw_odds, away_odds,
+                    over_2_5_odds, under_2_5_odds,
+                    btts_yes_odds, btts_no_odds,
+                    ai_prediction, created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s,
+                    %s, %s, %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s
+                )
+                ON CONFLICT (match_id) DO NOTHING
+            """, (
+                fixture_id, home_team, away_team, league, match_date,
+                True, odds.get("odds_source"),
+                odds["home_odds"], odds["draw_odds"], odds["away_odds"],
+                odds["over_2_5_odds"], odds["under_2_5_odds"],
+                odds["btts_yes_odds"], odds["btts_no_odds"],
+                f"Form: H({home_form}) A({away_form}) | Avg Goals: H({home_stats['goals_avg']}) A({away_stats['goals_avg']})",
+                datetime.now()
+            ))
+            print(f"  ✅ {home_team} - {away_team} (ODDS ile) kaydedildi!")
+        else:
+            cur.execute("""
+                INSERT INTO predictions (
+                    match_id, home_team, away_team, league, match_date,
+                    has_odds, odds_source,
+                    home_odds, draw_odds, away_odds,
+                    over_2_5_odds, under_2_5_odds,
+                    btts_yes_odds, btts_no_odds,
+                    ai_prediction, created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s,
+                    NULL, NULL, NULL,
+                    NULL, NULL,
+                    NULL, NULL,
+                    %s, %s
+                )
+                ON CONFLICT (match_id) DO NOTHING
+            """, (
+                fixture_id, home_team, away_team, league, match_date,
+                False, None,
+                f"NO_ODDS | Form: H({home_form}) A({away_form}) | Avg Goals: H({home_stats['goals_avg']}) A({away_stats['goals_avg']})",
+                datetime.now()
+            ))
+            print(f"  ⚠️ {home_team} - {away_team} (ODDS OLMADAN) kaydedildi!")
+        cur.execute("""
+            INSERT INTO match_stats (
+                match_id, home_form, away_form,
+                home_goals_avg, away_goals_avg,
+                created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (match_id) DO NOTHING
+        """, (
+            fixture_id, home_form, away_form,
+            home_stats['goals_avg'], away_stats['goals_avg'],
+            datetime.now()
+        ))
+        conn.commit()
+        close_db(conn)
+        return True
+    except Exception as e:
+        print(f"  ❌ Kritik Hata: {e}")
+        return False
+
+def collect_today_matches(league_ids=None):
+    if league_ids is None:
+        league_ids = [39, 140, 135, 78, 61, 203]
+    today = datetime.now().strftime("%Y-%m-%d")
+    print("\n" + "="*60)
+    print(f"🔍 {today} TARİHLİ MAÇLAR ARANLIYOR")
+    print("="*60 + "\n")
+    total_collected = 0
+    total_with_odds = 0
+    total_without_odds = 0
+    for league_id in league_ids:
+        url = f"{API_BASE}/fixtures"
+        params = {"league": league_id, "date": today}
+        data = api_request(url, params)
+        if not data:
+            print(f"⚠️ Lig {league_id}: API yanıt vermedi")
+            continue
+        fixtures = data.get("response", [])
+        if not fixtures:
+            print(f"ℹ️  Lig {league_id}: Maç yok")
+            continue
+        print(f"📌 Lig {league_id}: {len(fixtures)} maç bulundu")
+        for fixture in fixtures:
+            if collect_match_data(fixture):
+                total_collected += 1
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("SELECT home_odds FROM predictions WHERE match_id = %s", (str(fixture["fixture"]["id"]),))
+                result = cur.fetchone()
+                close_db(conn)
+                if result and result[0] is not None:
+                    total_with_odds += 1
+                else:
+                    total_without_odds += 1
+                time.sleep(2)
+    print("\n" + "="*60)
+    print("📊 TOPLAMA SONUÇLARI")
+    print("="*60)
+    print(f"✅ Toplam Kaydedilen: {total_collected} maç")
+    print(f"🟢 Odds ile: {total_with_odds} maç")
+    print(f"🟡 Odds olmadan: {total_without_odds} maç")
+    if total_without_odds > 0:
+        print(f"\n⚠️ DİKKAT: {total_without_odds} maçın odds bilgisi eksik!")
+        print("   Bu maçlar DeepSeek tarafından analiz EDİLEMEZ.")
+        print("   Ancak veritabanında kayıtlı, ileride odds eklenebilir.")
+    print("="*60 + "\n")
+    return total_collected
+
+if __name__ == "__main__":
+    collect_today_matches()
