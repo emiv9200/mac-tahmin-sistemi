@@ -182,6 +182,7 @@ def get_odds(fixture_id):
         odds = get_odds_from_bookmaker(fixture_id, bookmaker_id)
         
         if odds:
+            odds["odds_source"] = bookmaker_name
             print(f"     ✅ {bookmaker_name}'den alındı!")
             return odds
         
@@ -264,12 +265,14 @@ def collect_match_data(fixture):
             cur.execute("""
                 INSERT INTO predictions (
                     match_id, home_team, away_team, league, match_date,
+                    has_odds, odds_source,
                     home_odds, draw_odds, away_odds,
                     over_2_5_odds, under_2_5_odds,
                     btts_yes_odds, btts_no_odds,
                     ai_prediction, created_at
                 ) VALUES (
                     %s, %s, %s, %s, %s,
+                    %s, %s,
                     %s, %s, %s,
                     %s, %s,
                     %s, %s,
@@ -278,6 +281,7 @@ def collect_match_data(fixture):
                 ON CONFLICT (match_id) DO NOTHING
             """, (
                 fixture_id, home_team, away_team, league, match_date,
+                True, odds.get("odds_source"),
                 odds["home_odds"], odds["draw_odds"], odds["away_odds"],
                 odds["over_2_5_odds"], odds["under_2_5_odds"],
                 odds["btts_yes_odds"], odds["btts_no_odds"],
@@ -290,12 +294,14 @@ def collect_match_data(fixture):
             cur.execute("""
                 INSERT INTO predictions (
                     match_id, home_team, away_team, league, match_date,
+                    has_odds, odds_source,
                     home_odds, draw_odds, away_odds,
                     over_2_5_odds, under_2_5_odds,
                     btts_yes_odds, btts_no_odds,
                     ai_prediction, created_at
                 ) VALUES (
                     %s, %s, %s, %s, %s,
+                    %s, %s,
                     NULL, NULL, NULL,
                     NULL, NULL,
                     NULL, NULL,
@@ -304,6 +310,7 @@ def collect_match_data(fixture):
                 ON CONFLICT (match_id) DO NOTHING
             """, (
                 fixture_id, home_team, away_team, league, match_date,
+                False, None,
                 f"NO_ODDS | Form: H({home_form}) A({away_form}) | Avg Goals: H({home_stats['goals_avg']}) A({away_stats['goals_avg']})",
                 datetime.now()
             ))
